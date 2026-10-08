@@ -21,7 +21,7 @@ If the build fails, open the failed run, copy the red error lines, and send them
 ## Install on the Streamer
 1. Install the **Downloader** app from the Play Store.
 2. Settings > System > About > tap Build 7 times, then Settings > Apps > Security & restrictions > Unknown sources > allow Downloader.
-3. In Downloader, enter the release link above and install.
+3. In Downloader, enter the code **7201622** (or the full release link above) and install.
 4. Updates install over the old version.
 
 ## First tests (answers the star button and microphone questions)
