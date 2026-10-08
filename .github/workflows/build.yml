@@ -28,7 +28,16 @@ jobs:
           gradle-version: "8.10.2"
 
       - name: Build release APK
-        run: gradle assembleRelease --no-daemon
+        run: |
+          enc() { sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}'; }
+          set +e
+          gradle assembleRelease --no-daemon --stacktrace > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "::error title=Gradle errors::$(grep -nE '^e: |error:|What went wrong|Execution failed|Caused by|Could not|not found|Unresolved|FAILURE' build.log | head -50 | enc)"
+            echo "::error title=Gradle log tail::$(tail -n 45 build.log | enc)"
+          fi
+          exit $code
 
       - uses: actions/upload-artifact@v4
         with:
