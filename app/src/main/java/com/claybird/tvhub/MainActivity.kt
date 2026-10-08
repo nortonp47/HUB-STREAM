@@ -184,9 +184,10 @@ fun DiagnosticsScreen() {
     }
     val inputDevices = remember {
         InputDevice.getDeviceIds()
-            .mapNotNull { InputDevice.getDevice(it) }
-            .filter { !it.isVirtual }
-            .map { it.name }
+            .toList()
+            .mapNotNull { id -> InputDevice.getDevice(id) }
+            .filter { device -> !device.isVirtual }
+            .map { device -> device.name }
     }
 
     Row(
