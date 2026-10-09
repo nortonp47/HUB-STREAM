@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -212,20 +214,32 @@ fun VoiceSearchScreen(autoListen: Boolean) {
         Text("Search", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = HubGreen)
         Spacer(Modifier.height(12.dp))
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(60.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(HubSurface)
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.CenterStart,
+        Row(
+            modifier = Modifier.fillMaxWidth().height(60.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (query.isEmpty()) "Type or press Speak" else query,
-                fontSize = 24.sp,
-                color = if (query.isEmpty()) HubMuted else Color.White,
-            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(HubSurface)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = if (query.isEmpty()) "Type, or press the mic" else query,
+                    fontSize = 24.sp,
+                    color = if (query.isEmpty()) HubMuted else Color.White,
+                )
+            }
+            MicButton(
+                modifier = Modifier.size(60.dp),
+                listening = listening,
+            ) {
+                if (listening) recognizer?.stopListening() else listen()
+            }
         }
         val levelText = if (listening) "   (mic level ${"%.1f".format(level)})" else ""
         Text(
@@ -256,8 +270,7 @@ fun VoiceSearchScreen(autoListen: Boolean) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FocusButton("Speak", Modifier.weight(2f).height(56.dp)) { listen() }
-            FocusButton("Space", Modifier.weight(2f).height(56.dp)) { query += " " }
+            FocusButton("Space", Modifier.weight(3f).height(56.dp)) { query += " " }
             FocusButton("Delete", Modifier.weight(2f).height(56.dp)) {
                 query = query.dropLast(1)
             }
