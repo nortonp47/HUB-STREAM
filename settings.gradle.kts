@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Hub"
 include(":app")
+include(":voice")
