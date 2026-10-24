@@ -25,6 +25,9 @@ import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,7 +49,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -103,6 +108,8 @@ sealed class Screen {
     object Setup : Screen()
     object Settings : Screen()
     object Diagnostics : Screen()
+    object Guide : Screen()
+    object Sports : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -111,53 +118,95 @@ sealed class Screen {
 fun HubApp() {
     val context = LocalContext.current
     Repo.init(context)
+    Epg.init(context)
     val isTv = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
-    var screen by remember { mutableStateOf<Screen>(if (Repo.hasLogin) Screen.Home else Screen.Setup) }
+    val start: Screen = if (isTv) Screen.Home else Screen.Guide
+    var screen by remember { mutableStateOf<Screen>(if (Repo.hasLogin) start else Screen.Setup) }
 
     // Download (or read from cache) the channel lists whenever there is a login and nothing loaded yet.
     LaunchedEffect(Repo.hasLogin, Repo.loaded) {
         if (Repo.hasLogin && !Repo.loaded) Repo.refresh(force = false)
     }
+    // Then the program guide, in the background.
+    LaunchedEffect(Repo.loaded) {
+        if (Repo.loaded) Epg.load(force = false)
+    }
 
-    BackHandler(enabled = screen != Screen.Home && !(screen == Screen.Setup && !Repo.hasLogin)) {
+    BackHandler(enabled = screen != start && !(screen == Screen.Setup && !Repo.hasLogin)) {
         screen = when (val s = screen) {
             is Screen.Episodes -> s.back
-            else -> Screen.Home
+            else -> start
         }
     }
 
-    when (val s = screen) {
-        Screen.Home -> if (isTv) HomeScreen(
-            onSearch = { context.startActivity(Intent(context, VoiceSearchActivity::class.java)) },
-            onOpen = { screen = it },
-        ) else PhoneHomeScreen(onOpen = { screen = it })
-        Screen.Setup -> if (isTv) SetupScreen(onDone = { screen = Screen.Home }) else PhoneSetupScreen(onDone = { screen = Screen.Home })
-        Screen.Settings -> SettingsScreen(onLoggedOut = { screen = Screen.Setup })
-        Screen.Diagnostics -> DiagnosticsScreen()
-        is Screen.Browse -> {
-            val play: (List<Row3>, Int) -> Unit = { rows, index ->
-                when (s.kind) {
-                    Kind.Live -> {
-                        Repo.zapList = rows.map { it.ref as Channel }
-                        Repo.zapIndex = index
-                        PlayerActivity.live(context)
+    val watchLive: (List<Channel>, Int) -> Unit = { list, index ->
+        Repo.zapList = list
+        Repo.zapIndex = index
+        PlayerActivity.live(context)
+    }
+
+    val body: @Composable () -> Unit = {
+        when (val s = screen) {
+            Screen.Home -> HomeScreen(
+                onSearch = { context.startActivity(Intent(context, VoiceSearchActivity::class.java)) },
+                onOpen = { screen = it },
+            )
+            Screen.Setup -> if (isTv) SetupScreen(onDone = { screen = start }) else PhoneSetupScreen(onDone = { screen = start })
+            Screen.Settings -> SettingsScreen(onLoggedOut = { Epg.clear(); screen = Screen.Setup })
+            Screen.Diagnostics -> DiagnosticsScreen()
+            Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive)
+            Screen.Sports -> SportsScreen(isTv = isTv, onWatch = watchLive)
+            is Screen.Browse -> {
+                val play: (List<Row3>, Int) -> Unit = { rows, index ->
+                    when (s.kind) {
+                        Kind.Live -> watchLive(rows.map { it.ref as Channel }, index)
+                        Kind.Movies -> {
+                            val m = rows[index].ref as Movie
+                            PlayerActivity.vod(context, m.name, Repo.api!!.movieUrl(m.id, m.ext))
+                        }
+                        Kind.Series -> {}
                     }
-                    Kind.Movies -> {
-                        val m = rows[index].ref as Movie
-                        PlayerActivity.vod(context, m.name, Repo.api!!.movieUrl(m.id, m.ext))
+                }
+                val open: (Show) -> Unit = { screen = Screen.Episodes(it, s) }
+                if (isTv) BrowseScreen(s.kind, s.favorites, play, open)
+                else PhoneBrowseScreen(s.kind, s.favorites, play, open)
+            }
+            is Screen.Episodes -> {
+                val playEp: (Show, Episode) -> Unit = { show, ep ->
+                    PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext))
+                }
+                if (isTv) EpisodesScreen(s.show, playEp) else PhoneEpisodesScreen(s.show, playEp)
+            }
+        }
+    }
+
+    if (isTv || screen == Screen.Setup) {
+        body()
+    } else {
+        // Phone: tabs along the bottom.
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.weight(1f)) { body() }
+            val current = screen
+            val tabs = listOf(
+                Triple("Guide", Screen.Guide, current == Screen.Guide),
+                Triple("Live", Screen.Browse(Kind.Live), current is Screen.Browse && current.kind == Kind.Live),
+                Triple("Sports", Screen.Sports, current == Screen.Sports),
+                Triple("Movies", Screen.Browse(Kind.Movies), current is Screen.Browse && current.kind == Kind.Movies),
+                Triple("Shows", Screen.Browse(Kind.Series),
+                    (current is Screen.Browse && current.kind == Kind.Series) || current is Screen.Episodes),
+                Triple("More", Screen.Settings, current == Screen.Settings),
+            )
+            Row(modifier = Modifier.fillMaxWidth().background(HubSurface)) {
+                tabs.forEach { (label, target, on) ->
+                    Box(
+                        modifier = Modifier.weight(1f).height(56.dp).clickable { screen = target },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, fontSize = 13.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                            color = if (on) HubGreen else Color.White, maxLines = 1)
                     }
-                    Kind.Series -> {}
                 }
             }
-            val open: (Show) -> Unit = { screen = Screen.Episodes(it, s) }
-            if (isTv) BrowseScreen(s.kind, s.favorites, play, open)
-            else PhoneBrowseScreen(s.kind, s.favorites, play, open)
-        }
-        is Screen.Episodes -> {
-            val playEp: (Show, Episode) -> Unit = { show, ep ->
-                PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext))
-            }
-            if (isTv) EpisodesScreen(s.show, playEp) else PhoneEpisodesScreen(s.show, playEp)
         }
     }
 }
@@ -168,6 +217,8 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
     LaunchedEffect(Unit) { runCatching { firstTile.requestFocus() } }
 
     val tiles = listOf<Pair<String, () -> Unit>>(
+        "Guide" to { onOpen(Screen.Guide) },
+        "Sports Now" to { onOpen(Screen.Sports) },
         "Live TV" to { onOpen(Screen.Browse(Kind.Live)) },
         "Movies" to { onOpen(Screen.Browse(Kind.Movies)) },
         "Shows" to { onOpen(Screen.Browse(Kind.Series)) },

@@ -77,6 +77,17 @@ class XtreamApi(private val creds: Credentials) {
     fun episodeUrl(id: String, ext: String) =
         "$base/series/${enc(creds.username)}/${enc(creds.password)}/$id.${ext.ifBlank { "mp4" }}"
 
+    /** Opens the provider's full XMLTV guide. The caller reads and closes it. */
+    fun openXmltv(): HttpURLConnection {
+        val conn = URL("$base/xmltv.php?username=${enc(creds.username)}&password=${enc(creds.password)}")
+            .openConnection() as HttpURLConnection
+        conn.connectTimeout = 30000
+        conn.readTimeout = 180000
+        conn.setRequestProperty("Accept-Encoding", "gzip")
+        conn.setRequestProperty("User-Agent", "Hub/1.0")
+        return conn
+    }
+
     private fun fetch(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 20000
