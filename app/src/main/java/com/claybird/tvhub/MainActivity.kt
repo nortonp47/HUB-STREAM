@@ -90,39 +90,84 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Home, Diagnostics }
+private sealed class Screen {
+    object Home : Screen()
+    object Setup : Screen()
+    object Settings : Screen()
+    object Diagnostics : Screen()
+    class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
+    class Episodes(val show: Show, val back: Screen) : Screen()
+}
 
 @Composable
 fun HubApp() {
-    var screen by remember { mutableStateOf(Screen.Home) }
     val context = LocalContext.current
+    Repo.init(context)
+    var screen by remember { mutableStateOf<Screen>(if (Repo.hasLogin) Screen.Home else Screen.Setup) }
 
-    BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+    // Download (or read from cache) the channel lists whenever there is a login and nothing loaded yet.
+    LaunchedEffect(Repo.hasLogin, Repo.loaded) {
+        if (Repo.hasLogin && !Repo.loaded) Repo.refresh(force = false)
+    }
 
-    when (screen) {
+    BackHandler(enabled = screen != Screen.Home && !(screen == Screen.Setup && !Repo.hasLogin)) {
+        screen = when (val s = screen) {
+            is Screen.Episodes -> s.back
+            else -> Screen.Home
+        }
+    }
+
+    when (val s = screen) {
         Screen.Home -> HomeScreen(
             onSearch = { context.startActivity(Intent(context, VoiceSearchActivity::class.java)) },
-            onDiagnostics = { screen = Screen.Diagnostics },
+            onOpen = { screen = it },
         )
+        Screen.Setup -> SetupScreen(onDone = { screen = Screen.Home })
+        Screen.Settings -> SettingsScreen(onLoggedOut = { screen = Screen.Setup })
         Screen.Diagnostics -> DiagnosticsScreen()
+        is Screen.Browse -> BrowseScreen(
+            kind = s.kind,
+            startOnFavorites = s.favorites,
+            onPlay = { rows, index ->
+                when (s.kind) {
+                    Kind.Live -> {
+                        Repo.zapList = rows.map { it.ref as Channel }
+                        Repo.zapIndex = index
+                        PlayerActivity.live(context)
+                    }
+                    Kind.Movies -> {
+                        val m = rows[index].ref as Movie
+                        PlayerActivity.vod(context, m.name, Repo.api!!.movieUrl(m.id, m.ext))
+                    }
+                    Kind.Series -> {}
+                }
+            },
+            onOpenShow = { screen = Screen.Episodes(it, s) },
+        )
+        is Screen.Episodes -> EpisodesScreen(
+            show = s.show,
+            onPlayEpisode = { show, ep ->
+                PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext))
+            },
+        )
     }
 }
 
 @Composable
-fun HomeScreen(onSearch: () -> Unit, onDiagnostics: () -> Unit) {
-    var note by remember { mutableStateOf("") }
+private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
     val firstTile = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { firstTile.requestFocus() } }
 
     val tiles = listOf<Pair<String, () -> Unit>>(
+        "Live TV" to { onOpen(Screen.Browse(Kind.Live)) },
+        "Movies" to { onOpen(Screen.Browse(Kind.Movies)) },
+        "Shows" to { onOpen(Screen.Browse(Kind.Series)) },
         "Search" to onSearch,
-        "Live TV" to { note = "Live TV arrives in Phase 1." },
-        "Guide" to { note = "The cable-style guide arrives in Phase 2." },
-        "Movies & Shows" to { note = "On-demand arrives in Phase 1." },
-        "Favorites" to { note = "Favorites arrive in Phase 2." },
-        "Add-ons" to { note = "Stremio add-ons arrive in Phase 5." },
-        "Diagnostics" to onDiagnostics,
-        "Settings" to { note = "Settings arrive in Phase 6." },
+        "Favorite Channels" to { onOpen(Screen.Browse(Kind.Live, favorites = true)) },
+        "Favorite Movies" to { onOpen(Screen.Browse(Kind.Movies, favorites = true)) },
+        "Favorite Shows" to { onOpen(Screen.Browse(Kind.Series, favorites = true)) },
+        "Settings" to { onOpen(Screen.Settings) },
+        "Diagnostics" to { onOpen(Screen.Diagnostics) },
     )
 
     Column(modifier = Modifier.fillMaxSize().padding(48.dp)) {
@@ -133,7 +178,7 @@ fun HomeScreen(onSearch: () -> Unit, onDiagnostics: () -> Unit) {
             color = HubGreen,
         )
         Text(
-            text = "Live TV, guide and streaming in one place",
+            text = Repo.status.ifBlank { "Live TV, movies and shows in one place" },
             fontSize = 18.sp,
             color = HubMuted,
         )
@@ -154,8 +199,12 @@ fun HomeScreen(onSearch: () -> Unit, onDiagnostics: () -> Unit) {
             Spacer(Modifier.height(16.dp))
         }
 
-        Spacer(Modifier.height(12.dp))
-        Text(text = note, fontSize = 18.sp, color = HubMuted)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Tip: press and hold OK on any channel, movie or show to favorite it.",
+            fontSize = 16.sp,
+            color = HubMuted,
+        )
     }
 }
 
