@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -66,10 +67,17 @@ object KeyLog {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Phone: the media controls are a notification, so ask for permission once (Android 13+).
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         setContent {
             HubTheme {
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().safeDrawingPadding(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
                     HubApp()
@@ -90,7 +98,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private sealed class Screen {
+sealed class Screen {
     object Home : Screen()
     object Setup : Screen()
     object Settings : Screen()
@@ -103,6 +111,7 @@ private sealed class Screen {
 fun HubApp() {
     val context = LocalContext.current
     Repo.init(context)
+    val isTv = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
     var screen by remember { mutableStateOf<Screen>(if (Repo.hasLogin) Screen.Home else Screen.Setup) }
 
     // Download (or read from cache) the channel lists whenever there is a login and nothing loaded yet.
@@ -118,17 +127,15 @@ fun HubApp() {
     }
 
     when (val s = screen) {
-        Screen.Home -> HomeScreen(
+        Screen.Home -> if (isTv) HomeScreen(
             onSearch = { context.startActivity(Intent(context, VoiceSearchActivity::class.java)) },
             onOpen = { screen = it },
-        )
-        Screen.Setup -> SetupScreen(onDone = { screen = Screen.Home })
+        ) else PhoneHomeScreen(onOpen = { screen = it })
+        Screen.Setup -> if (isTv) SetupScreen(onDone = { screen = Screen.Home }) else PhoneSetupScreen(onDone = { screen = Screen.Home })
         Screen.Settings -> SettingsScreen(onLoggedOut = { screen = Screen.Setup })
         Screen.Diagnostics -> DiagnosticsScreen()
-        is Screen.Browse -> BrowseScreen(
-            kind = s.kind,
-            startOnFavorites = s.favorites,
-            onPlay = { rows, index ->
+        is Screen.Browse -> {
+            val play: (List<Row3>, Int) -> Unit = { rows, index ->
                 when (s.kind) {
                     Kind.Live -> {
                         Repo.zapList = rows.map { it.ref as Channel }
@@ -141,15 +148,17 @@ fun HubApp() {
                     }
                     Kind.Series -> {}
                 }
-            },
-            onOpenShow = { screen = Screen.Episodes(it, s) },
-        )
-        is Screen.Episodes -> EpisodesScreen(
-            show = s.show,
-            onPlayEpisode = { show, ep ->
+            }
+            val open: (Show) -> Unit = { screen = Screen.Episodes(it, s) }
+            if (isTv) BrowseScreen(s.kind, s.favorites, play, open)
+            else PhoneBrowseScreen(s.kind, s.favorites, play, open)
+        }
+        is Screen.Episodes -> {
+            val playEp: (Show, Episode) -> Unit = { show, ep ->
                 PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext))
-            },
-        )
+            }
+            if (isTv) EpisodesScreen(s.show, playEp) else PhoneEpisodesScreen(s.show, playEp)
+        }
     }
 }
 
