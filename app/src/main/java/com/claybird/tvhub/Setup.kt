@@ -191,7 +191,7 @@ fun SettingsScreen(onLoggedOut: () -> Unit) {
         ) {
             if (!busy) {
                 busy = true
-                scope.launch { Repo.refresh(force = true); busy = false }
+                scope.launch { Repo.refresh(force = true); Epg.load(force = true); busy = false }
             }
         }
         Spacer(Modifier.height(12.dp))
