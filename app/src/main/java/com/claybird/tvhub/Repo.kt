@@ -277,6 +277,9 @@ object Repo {
     var zapList: List<Channel> = emptyList()
     var zapIndex: Int = 0
 
+    /** Other channels showing the same game, tried automatically if the first one fails. */
+    val fallback = java.util.ArrayDeque<Channel>()
+
     fun playItemFor(c: Channel): PlayItem {
         val a = api!!
         return PlayItem(c.name, a.liveUrl(c.id), a.liveTsUrl(c.id), true, c.id)

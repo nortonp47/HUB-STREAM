@@ -288,11 +288,11 @@ fun GuideScreen(isTv: Boolean, startOnFavorites: Boolean = false, onWatch: (List
     }
 }
 
-/** Live sports now (and later today), filterable by sport. */
+/** Live sports now (and later today), one row per game, filterable by sport. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SportsScreen(isTv: Boolean, onWatch: (List<Channel>, Int) -> Unit) {
-    var items by remember { mutableStateOf<List<SportItem>?>(null) }
+fun SportsScreen(isTv: Boolean, onWatchGame: (List<Game>, Int, Int) -> Unit) {
+    var items by remember { mutableStateOf<List<Game>?>(null) }
     var mode by remember { mutableStateOf("live") }
     var sport by remember { mutableStateOf("all") }
     val epgVersion = Epg.version
@@ -300,7 +300,9 @@ fun SportsScreen(isTv: Boolean, onWatch: (List<Channel>, Int) -> Unit) {
     LaunchedEffect(epgVersion, Repo.loaded) {
         if (!Repo.loaded) return@LaunchedEffect
         while (true) {
-            items = withContext(Dispatchers.Default) { Sports.build(System.currentTimeMillis() / 1000, 8 * 3600) }
+            items = withContext(Dispatchers.Default) {
+                Games.group(Sports.build(System.currentTimeMillis() / 1000, 8 * 3600))
+            }
             delay(60_000)
         }
     }
@@ -325,46 +327,69 @@ fun SportsScreen(isTv: Boolean, onWatch: (List<Channel>, Int) -> Unit) {
 
         val shown = inMode
             .filter { sport == "all" || it.sport.name == sport }
-            .sortedWith(if (mode == "live") compareBy({ it.sport.ordinal }, { it.prog.end }) else compareBy({ it.prog.start }))
+            .sortedWith(if (mode == "live") compareBy({ it.sport.ordinal }, { it.end }) else compareBy({ it.start }))
         if (shown.isEmpty()) {
             Text(
                 if (mode == "live") "No live games found in the guide right now." else "Nothing starting in the next 8 hours.",
                 fontSize = 16.sp, color = HubMuted, modifier = Modifier.padding(16.dp),
             )
         }
-        val channelsShown = remember(shown) { shown.map { it.channel } }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(shown, key = { "${it.channel.id}:${it.prog.start}" }) { item ->
+            items(shown, key = { "${it.sport.name}:${it.title}:${it.start}" }) { game ->
                 var focused by remember { mutableStateOf(false) }
                 val now = System.currentTimeMillis() / 1000
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { focused = it.isFocused }
-                        .background(if (focused) HubGreen else Color.Transparent)
-                        .combinedClickable(
-                            onClick = { onWatch(channelsShown, shown.indexOf(item)) },
-                            onLongClick = { Repo.toggleFavorite(Kind.Live, item.channel.id) },
-                        )
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (item.channel.icon.isNotBlank()) {
-                        AsyncImage(model = item.channel.icon, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.size(44.dp))
-                        Spacer(Modifier.width(12.dp))
+                val best = game.streams.first()
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focused = it.isFocused }
+                            .background(if (focused) HubGreen else Color.Transparent)
+                            .combinedClickable(
+                                onClick = { onWatchGame(shown, shown.indexOf(game), 0) },
+                                onLongClick = { Repo.toggleFavorite(Kind.Live, best.channel.id) },
+                            )
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (best.channel.icon.isNotBlank()) {
+                            AsyncImage(model = best.channel.icon, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.size(44.dp))
+                            Spacer(Modifier.width(12.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            val fg = if (focused) Color.Black else Color.White
+                            Text(game.title, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "${game.sport.label}   " + if (game.live)
+                                    "Live until ${clockText(game.end)}  (${((game.end - now) / 60).coerceAtLeast(0)} min left)"
+                                else "Starts ${dayClockText(game.start)}",
+                                fontSize = 13.sp, color = if (focused) Color.Black else HubGreen,
+                            )
+                        }
                     }
-                    Column(modifier = Modifier.weight(1f)) {
-                        val fg = if (focused) Color.Black else Color.White
-                        val sub = if (focused) Color.Black else HubMuted
-                        Text(item.prog.title, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text("${item.sport.label}   ${item.channel.name}", fontSize = 14.sp, color = sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            if (item.live) "Live until ${clockText(item.prog.end)}  (${((item.prog.end - now) / 60).coerceAtLeast(0)} min left)"
-                            else "Starts ${dayClockText(item.prog.start)}",
-                            fontSize = 13.sp, color = if (focused) Color.Black else HubGreen,
-                        )
+                    // The best few channels showing it; the first is the one a plain tap plays.
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    ) {
+                        val top = game.streams.take(3)
+                        items(top.size) { i ->
+                            val label = top[i].channel.name.replace(Regex("^[A-Za-z]{2,3}\\s*[|:]\\s*"), "")
+                            var f by remember { mutableStateOf(false) }
+                            Box(
+                                modifier = Modifier
+                                    .onFocusChanged { f = it.isFocused }
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (f) HubGreen else if (i == 0) Color(0xFF2F5A43) else HubSurface)
+                                    .clickable { onWatchGame(shown, shown.indexOf(game), i) }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                            ) {
+                                Text(label + if (i == 0) "  (best)" else "", fontSize = 13.sp, maxLines = 1,
+                                    color = if (f) Color.Black else Color.White)
+                            }
+                        }
                     }
-                    if (Repo.isFavorite(Kind.Live, item.channel.id)) Text("*", fontSize = 22.sp, color = if (focused) Color.Black else HubGreen)
                 }
             }
         }

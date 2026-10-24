@@ -169,7 +169,16 @@ fun HubApp() {
             Screen.Settings -> SettingsScreen(isTv, onOpen = { screen = it })
             Screen.Diagnostics -> DiagnosticsScreen()
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive)
-            Screen.Sports -> SportsScreen(isTv = isTv, onWatch = watchLive)
+            Screen.Sports -> SportsScreen(isTv = isTv, onWatchGame = { games, gameIndex, streamIndex ->
+                // One channel per game goes in the zap list; the others become automatic fallbacks.
+                val chosen = games[gameIndex].streams[streamIndex].channel
+                val list = games.mapIndexed { i, g -> if (i == gameIndex) chosen else g.streams.first().channel }
+                Repo.zapList = list
+                Repo.zapIndex = gameIndex
+                Repo.fallback.clear()
+                games[gameIndex].streams.map { it.channel }.filter { it.id != chosen.id }.take(2).forEach { Repo.fallback.add(it) }
+                PlayerActivity.live(context)
+            })
             is Screen.Browse -> {
                 val play: (List<Row3>, Int) -> Unit = { rows, index ->
                     when (s.kind) {

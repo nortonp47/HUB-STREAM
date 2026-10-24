@@ -81,3 +81,44 @@ object Sports {
         return out
     }
 }
+
+/** One game, with every channel showing it, best first. */
+class Game(val sport: Sport, val title: String, val live: Boolean, val start: Long, val end: Long, val streams: List<SportItem>)
+
+object Games {
+    private val trailingTags = Regex("\\(.*?\\)|\\[.*?\\]")
+    private val leadTags = Regex("^(live|new|ppv)\\s*[:\\-]\\s*", RegexOption.IGNORE_CASE)
+    private val nonAlnum = Regex("[^a-z0-9]+")
+    private val hd = Regex("\\b(hd|fhd|uhd|4k|1080p?|hevc)\\b", RegexOption.IGNORE_CASE)
+    private val sd = Regex("\\b(sd|480p?|360p?)\\b", RegexOption.IGNORE_CASE)
+    private val us = Regex("(^|[^a-z])(us|usa|united states|america)([^a-z]|$)", RegexOption.IGNORE_CASE)
+    private val otherRegion = Regex(
+        "(^|[^a-z])(uk|gb|ca|au|nz|ie|es|fr|de|it|pt|br|ar|mx|nl|se|no|dk|pl|tr|in|pk|latino|spanish|arabic|portugal|india)([^a-z]|$)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun key(item: SportItem): String {
+        var t = item.prog.title.replace(trailingTags, " ").replace(leadTags, "").lowercase()
+        t = t.replace(nonAlnum, " ").trim()
+        return "${item.sport.name}|$t|${item.prog.start / 1800}"
+    }
+
+    /** Higher is better. A guess from the channel name and category (no stream testing). */
+    fun score(item: SportItem): Int {
+        val text = "${item.category} ${item.channel.name}"
+        var s = 0
+        if (us.containsMatchIn(text)) s += 20
+        if (otherRegion.containsMatchIn(text)) s -= 30
+        if (hd.containsMatchIn(item.channel.name)) s += 10
+        if (sd.containsMatchIn(item.channel.name)) s -= 10
+        if (Repo.isFavorite(Kind.Live, item.channel.id)) s += 5
+        return s
+    }
+
+    fun group(items: List<SportItem>): List<Game> =
+        items.groupBy { key(it) }.values.map { list ->
+            val ranked = list.sortedByDescending { score(it) }
+            val first = ranked.first()
+            Game(first.sport, first.prog.title, first.live, first.prog.start, first.prog.end, ranked)
+        }
+}

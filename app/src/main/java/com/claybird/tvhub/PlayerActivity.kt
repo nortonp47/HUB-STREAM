@@ -107,7 +107,7 @@ class PlayerActivity : ComponentActivity() {
 
         if (isLive) {
             if (Repo.zapList.isEmpty() || Repo.api == null) { finish(); return }
-            playChannel(Repo.zapIndex)
+            playChannel(Repo.zapIndex, keepFallback = true)
         } else {
             val url = intent.getStringExtra(EXTRA_URL) ?: run { finish(); return }
             title = intent.getStringExtra(EXTRA_TITLE) ?: ""
@@ -183,8 +183,13 @@ class PlayerActivity : ComponentActivity() {
                     player.prepare()
                     player.playWhenReady = true
                 } else {
-                    message = "Can't play this: ${error.errorCodeName}"
-                    showOverlay(8000)
+                    val next = Repo.fallback.pollFirst()
+                    if (next != null && isLive) {
+                        playFallback(next)
+                    } else {
+                        message = "Can't play this: ${error.errorCodeName}"
+                        showOverlay(8000)
+                    }
                 }
             }
 
@@ -221,7 +226,21 @@ class PlayerActivity : ComponentActivity() {
         playing = true
     }
 
-    private fun playChannel(index: Int) {
+    /** The channel that was playing failed; try another one showing the same game. */
+    private fun playFallback(c: Channel) {
+        val list = Repo.zapList.toMutableList()
+        if (Repo.zapIndex in list.indices) list[Repo.zapIndex] = c
+        Repo.zapList = list
+        val item = Repo.playItemFor(c)
+        title = c.name
+        subtitle = ""
+        start(item.url, item.altUrl)
+        message = "That stream failed, trying ${c.name}"
+        showOverlay(6000)
+    }
+
+    private fun playChannel(index: Int, keepFallback: Boolean = false) {
+        if (!keepFallback) Repo.fallback.clear()
         val list = Repo.zapList
         if (list.isEmpty()) return
         val i = ((index % list.size) + list.size) % list.size
@@ -252,7 +271,7 @@ class PlayerActivity : ComponentActivity() {
             player.seekToDefaultPosition()
             player.play()
         } else {
-            playChannel(Repo.zapIndex)
+            playChannel(Repo.zapIndex, keepFallback = true)
         }
         showOverlay()
     }
