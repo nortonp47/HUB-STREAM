@@ -107,6 +107,7 @@ sealed class Screen {
     object Home : Screen()
     object Setup : Screen()
     object Settings : Screen()
+    object Account : Screen()
     object Diagnostics : Screen()
     object Guide : Screen()
     object Sports : Screen()
@@ -118,21 +119,33 @@ sealed class Screen {
 fun HubApp() {
     val context = LocalContext.current
     Repo.init(context)
+    Cloud.init(context)
     Epg.init(context)
     val isTv = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
     val start: Screen = if (isTv) Screen.Home else Screen.Guide
     var screen by remember { mutableStateOf<Screen>(if (Repo.hasLogin) start else Screen.Setup) }
 
     // Download (or read from cache) the channel lists whenever there is a login and nothing loaded yet.
-    LaunchedEffect(Repo.hasLogin, Repo.loaded) {
+    LaunchedEffect(Repo.activeId, Repo.loaded) {
         if (Repo.hasLogin && !Repo.loaded) Repo.refresh(force = false)
     }
     // Then the program guide, in the background.
-    LaunchedEffect(Repo.loaded) {
+    LaunchedEffect(Repo.activeId, Repo.loaded) {
         if (Repo.loaded) Epg.load(force = false)
     }
+    // Signed in: pull playlists and favorites from the account when the app opens.
+    LaunchedEffect(Cloud.email) {
+        if (Cloud.signedIn) {
+            Repo.syncWithAccount()
+            if (screen == Screen.Setup && Repo.hasLogin) screen = start
+        }
+    }
+    // Removing the last playlist sends you back to setup.
+    LaunchedEffect(Repo.hasLogin) {
+        if (!Repo.hasLogin && screen != Screen.Account) screen = Screen.Setup
+    }
 
-    BackHandler(enabled = screen != start && !(screen == Screen.Setup && !Repo.hasLogin)) {
+    BackHandler(enabled = screen != start && !((screen == Screen.Setup || screen == Screen.Account) && !Repo.hasLogin && screen == Screen.Setup)) {
         screen = when (val s = screen) {
             is Screen.Episodes -> s.back
             else -> start
@@ -151,8 +164,9 @@ fun HubApp() {
                 onSearch = { context.startActivity(Intent(context, VoiceSearchActivity::class.java)) },
                 onOpen = { screen = it },
             )
-            Screen.Setup -> if (isTv) SetupScreen(onDone = { screen = start }) else PhoneSetupScreen(onDone = { screen = start })
-            Screen.Settings -> SettingsScreen(onLoggedOut = { Epg.clear(); screen = Screen.Setup })
+            Screen.Setup -> SetupScreen(isTv, onDone = { screen = start }, onAccount = { screen = Screen.Account })
+            Screen.Account -> AccountScreen(isTv, onDone = { screen = if (Repo.hasLogin) start else Screen.Setup })
+            Screen.Settings -> SettingsScreen(isTv, onOpen = { screen = it })
             Screen.Diagnostics -> DiagnosticsScreen()
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive)
             Screen.Sports -> SportsScreen(isTv = isTv, onWatch = watchLive)
@@ -180,7 +194,7 @@ fun HubApp() {
         }
     }
 
-    if (isTv || screen == Screen.Setup) {
+    if (isTv || screen == Screen.Setup || screen == Screen.Account) {
         body()
     } else {
         // Phone: tabs along the bottom.

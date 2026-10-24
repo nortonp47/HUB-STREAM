@@ -47,12 +47,13 @@ object Epg {
     fun current(c: Channel, now: Long): Prog? =
         forChannel(c)?.firstOrNull { it.start <= now && it.end > now }
 
-    private fun cacheFile() = File(appContext.filesDir, "epg_cache.bin.gz")
+    private fun cacheFile() = File(appContext.filesDir, "epg_${Repo.activeId}.bin.gz")
 
-    fun clear() {
+    fun clear(deleteFile: Boolean = true) {
         data = emptyMap()
         ready = false
-        cacheFile().delete()
+        status = ""
+        if (deleteFile) cacheFile().delete()
         version++
     }
 

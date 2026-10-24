@@ -48,57 +48,6 @@ import kotlinx.coroutines.withContext
 // Touch layouts for the phone. The TV layouts (Browse.kt, Setup.kt) are built for a remote.
 
 @Composable
-fun PhoneSetupScreen(onDone: () -> Unit) {
-    var server by remember { mutableStateOf(Repo.creds?.server ?: "http://") }
-    var user by remember { mutableStateOf(Repo.creds?.username ?: "") }
-    var pass by remember { mutableStateOf(Repo.creds?.password ?: "") }
-    var message by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("Connect your IPTV service", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = HubGreen)
-        Text("Stored only on this phone.", fontSize = 14.sp, color = HubMuted)
-        OutlinedTextField(
-            value = server, onValueChange = { server = it }, singleLine = true,
-            label = { Text("Server URL") }, modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-        )
-        OutlinedTextField(
-            value = user, onValueChange = { user = it }, singleLine = true,
-            label = { Text("Username") }, modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-        )
-        OutlinedTextField(
-            value = pass, onValueChange = { pass = it }, singleLine = true,
-            label = { Text("Password") }, modifier = Modifier.fillMaxWidth(),
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        )
-        FocusButton(
-            label = if (busy) "Connecting..." else "Connect",
-            modifier = Modifier.fillMaxWidth().height(54.dp),
-        ) {
-            if (!busy) {
-                busy = true
-                message = "Checking login..."
-                scope.launch {
-                    val c = Credentials(server.trim(), user.trim(), pass.trim())
-                    val result = withContext(Dispatchers.IO) { runCatching { XtreamApi(c).authenticate() } }
-                    result.onSuccess { Repo.saveLogin(c); message = "Connected: $it"; onDone() }
-                        .onFailure { message = it.message ?: "Couldn't connect" }
-                    busy = false
-                }
-            }
-        }
-        Text(message, fontSize = 15.sp, color = HubMuted)
-    }
-}
-
-@Composable
 fun PhoneHomeScreen(onOpen: (Screen) -> Unit) {
     val tiles = listOf(
         "Live TV" to Screen.Browse(Kind.Live),

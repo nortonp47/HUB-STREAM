@@ -14,6 +14,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -67,137 +76,220 @@ fun OnScreenKeyboard(
     }
 }
 
-/** First-run login to the Xtream panel. Entered here, stored only on this device. */
+class Field(val label: String, val secret: Boolean = false, val type: KeyboardType = KeyboardType.Text)
+
+/**
+ * Text entry for both devices. Phone: normal text fields with the system keyboard.
+ * TV: choose a field with the remote, then type on the app's own keyboard.
+ */
 @Composable
-fun SetupScreen(onDone: () -> Unit) {
-    var server by remember { mutableStateOf(Repo.creds?.server ?: "http://") }
-    var user by remember { mutableStateOf(Repo.creds?.username ?: "") }
-    var pass by remember { mutableStateOf(Repo.creds?.password ?: "") }
+fun FormFields(isTv: Boolean, fields: List<Field>, values: SnapshotStateList<String>, firstKey: FocusRequester?) {
+    if (!isTv) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            fields.forEachIndexed { i, f ->
+                OutlinedTextField(
+                    value = values[i], onValueChange = { values[i] = it }, singleLine = true,
+                    label = { Text(f.label) }, modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (f.secret) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = KeyboardOptions(keyboardType = if (f.secret) KeyboardType.Password else f.type),
+                )
+            }
+        }
+        return
+    }
     var active by remember { mutableStateOf(0) }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        fields.forEachIndexed { i, f ->
+            var focused by remember { mutableStateOf(false) }
+            val shape = RoundedCornerShape(10.dp)
+            Column(
+                modifier = Modifier
+                    .weight(if (f.type == KeyboardType.Uri) 1.6f else 1f)
+                    .onFocusChanged { focused = it.isFocused }
+                    .clip(shape)
+                    .background(HubSurface)
+                    .then(
+                        if (active == i) Modifier.border(3.dp, HubGreen, shape)
+                        else if (focused) Modifier.border(3.dp, Color.White, shape)
+                        else Modifier
+                    )
+                    .clickable { active = i }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Text(f.label, fontSize = 13.sp, color = HubMuted)
+                Text(values[i].ifEmpty { " " }, fontSize = 20.sp, maxLines = 1)
+            }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    OnScreenKeyboard(
+        onChar = { ch -> values[active] = values[active] + ch },
+        onDelete = { values[active] = values[active].dropLast(1) },
+        onClear = { values[active] = "" },
+        firstKey = firstKey,
+    )
+}
+
+/** Add a playlist: the provider's Xtream server, username and password. Stored on this device (and your account if signed in). */
+@Composable
+fun SetupScreen(isTv: Boolean, onDone: () -> Unit, onAccount: (() -> Unit)?) {
+    val fields = remember {
+        listOf(Field("Name (optional)"), Field("Server URL", type = KeyboardType.Uri), Field("Username"), Field("Password", secret = !isTv))
+    }
+    val values = remember { mutableStateListOf("", "http://", "", "") }
     var message by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val firstKey = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { firstKey.requestFocus() } }
-
-    val labels = listOf("Server URL", "Username", "Password")
-    val values = listOf(server, user, pass)
-    fun update(f: (String) -> String) {
-        when (active) {
-            0 -> server = f(server)
-            1 -> user = f(user)
-            else -> pass = f(pass)
-        }
-    }
+    LaunchedEffect(Unit) { if (isTv) runCatching { firstKey.requestFocus() } }
 
     val connect: () -> Unit = {
         if (!busy) {
             busy = true
             message = "Checking login..."
             scope.launch {
-                val c = Credentials(server.trim(), user.trim(), pass.trim())
-                val result = withContext(Dispatchers.IO) {
-                    runCatching { XtreamApi(c).authenticate() }
-                }
+                val c = Credentials(values[1].trim(), values[2].trim(), values[3].trim())
+                val result = withContext(Dispatchers.IO) { runCatching { XtreamApi(c).authenticate() } }
                 result.onSuccess {
-                    Repo.saveLogin(c)
+                    Repo.addPlaylist(values[0].trim(), c)
                     message = "Connected: $it"
                     onDone()
-                }.onFailure {
-                    message = it.message ?: "Couldn't connect"
-                }
+                }.onFailure { message = it.message ?: "Couldn't connect" }
                 busy = false
             }
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 28.dp)) {
-        Text("Connect your IPTV service", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = HubGreen)
-        Text(
-            "Choose a field, then type with the keyboard below. Stored only on this device.",
-            fontSize = 16.sp, color = HubMuted,
-        )
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            labels.forEachIndexed { i, label ->
-                var focused by remember { mutableStateOf(false) }
-                val shape = RoundedCornerShape(10.dp)
-                Column(
-                    modifier = Modifier
-                        .weight(if (i == 0) 1.6f else 1f)
-                        .onFocusChanged { focused = it.isFocused }
-                        .clip(shape)
-                        .background(HubSurface)
-                        .then(
-                            if (active == i) Modifier.border(3.dp, HubGreen, shape)
-                            else if (focused) Modifier.border(3.dp, Color.White, shape)
-                            else Modifier
-                        )
-                        .clickable { active = i }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                ) {
-                    Text(label, fontSize = 13.sp, color = HubMuted)
-                    Text(
-                        text = values[i].ifEmpty { " " },
-                        fontSize = 20.sp,
-                        maxLines = 1,
-                    )
-                }
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = if (isTv) 48.dp else 24.dp, vertical = 20.dp)
+        .verticalScroll(rememberScrollState())) {
+        Text(if (Repo.hasLogin) "Add a playlist" else "Connect your IPTV service", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = HubGreen)
+        Spacer(Modifier.height(10.dp))
+        FormFields(isTv, fields, values, firstKey)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            FocusButton(if (busy) "Connecting..." else "Connect", Modifier.width(200.dp).height(54.dp)) { connect() }
+            if (onAccount != null && !Repo.hasLogin) {
+                FocusButton("Sign in to HUB account", Modifier.width(280.dp).height(54.dp)) { onAccount() }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        OnScreenKeyboard(
-            onChar = { ch -> update { it + ch } },
-            onDelete = { update { it.dropLast(1) } },
-            onClear = { update { "" } },
-            firstKey = firstKey,
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            FocusButton(
-                label = if (busy) "Connecting..." else "Connect",
-                modifier = Modifier.width(220.dp).height(56.dp),
-            ) { connect() }
-            Text(message, fontSize = 16.sp, color = HubMuted)
-        }
+        Text(message, fontSize = 15.sp, color = HubMuted, modifier = Modifier.padding(top = 8.dp))
     }
 }
 
-/** Account info, refresh and log out. */
+/** Sign in or create a HUB account so playlists and favorites follow you to every device. */
 @Composable
-fun SettingsScreen(onLoggedOut: () -> Unit) {
-    var info by remember { mutableStateOf("Checking account...") }
+fun AccountScreen(isTv: Boolean, onDone: () -> Unit) {
+    val fields = remember { listOf(Field("Email", type = KeyboardType.Email), Field("Password", secret = !isTv)) }
+    val values = remember { mutableStateListOf("", "") }
+    var message by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val firstKey = remember { FocusRequester() }
+    LaunchedEffect(Unit) { if (isTv) runCatching { firstKey.requestFocus() } }
+
+    fun run(create: Boolean) {
+        if (busy) return
+        val mail = values[0].trim()
+        val pw = values[1]
+        if (mail.isBlank() || pw.length < 6) { message = "Enter your email and a password of at least 6 characters."; return }
+        busy = true
+        message = if (create) "Creating account..." else "Signing in..."
+        scope.launch {
+            try {
+                if (create) {
+                    val signedIn = Cloud.signUp(mail, pw)
+                    if (!signedIn) { message = "Account created. Check your email to confirm it, then come back and press Sign in."; busy = false; return@launch }
+                } else {
+                    Cloud.signIn(mail, pw)
+                }
+                message = "Signed in. Syncing..."
+                message = Repo.syncWithAccount()
+                onDone()
+            } catch (e: Exception) {
+                message = e.message ?: "Couldn't sign in"
+            }
+            busy = false
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = if (isTv) 48.dp else 24.dp, vertical = 20.dp)
+        .verticalScroll(rememberScrollState())) {
+        Text("HUB account", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = HubGreen)
+        Text("Your playlists and favorites follow you to every device you sign in on.", fontSize = 15.sp, color = HubMuted)
+        Spacer(Modifier.height(10.dp))
+        FormFields(isTv, fields, values, firstKey)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FocusButton(if (busy) "Working..." else "Sign in", Modifier.width(200.dp).height(54.dp)) { run(false) }
+            FocusButton("Create account", Modifier.width(240.dp).height(54.dp)) { run(true) }
+        }
+        Text(message, fontSize = 15.sp, color = HubMuted, modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+/** Account, playlists, refresh. */
+@Composable
+fun SettingsScreen(isTv: Boolean, onOpen: (Screen) -> Unit) {
+    var info by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var syncMsg by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
     val first = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        runCatching { first.requestFocus() }
+    val active = Repo.active
+    LaunchedEffect(Repo.activeId) {
+        if (isTv) runCatching { first.requestFocus() }
+        info = "Checking account..."
         info = withContext(Dispatchers.IO) {
             runCatching { Repo.api!!.authenticate() }.getOrElse { it.message ?: "Couldn't reach the server" }
         }
     }
-    Column(modifier = Modifier.fillMaxSize().padding(48.dp)) {
-        Text("Settings", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = HubGreen)
-        Spacer(Modifier.height(16.dp))
-        Text("Server: ${Repo.creds?.server ?: ""}", fontSize = 18.sp)
-        Text("User: ${Repo.creds?.username ?: ""}", fontSize = 18.sp)
-        Text("Account: $info", fontSize = 18.sp, color = HubMuted)
-        Text(Repo.status, fontSize = 16.sp, color = HubMuted)
-        Spacer(Modifier.height(24.dp))
-        FocusButton(
-            label = if (busy) "Refreshing..." else "Refresh channel lists now",
-            modifier = Modifier.width(380.dp).height(56.dp),
-            focusRequester = first,
-        ) {
-            if (!busy) {
-                busy = true
-                scope.launch { Repo.refresh(force = true); Epg.load(force = true); busy = false }
+    val pad = if (isTv) 48.dp else 20.dp
+    Column(modifier = Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState())) {
+        Text("Settings", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = HubGreen)
+        Spacer(Modifier.height(14.dp))
+
+        Text("HUB account", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        if (Cloud.signedIn) {
+            Text("Signed in as ${Cloud.email}", fontSize = 16.sp, color = HubMuted)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FocusButton(if (busy) "Syncing..." else "Sync now", Modifier.width(180.dp).height(50.dp), focusRequester = first) {
+                    if (!busy) { busy = true; scope.launch { syncMsg = Repo.syncWithAccount(); busy = false } }
+                }
+                FocusButton("Sign out", Modifier.width(180.dp).height(50.dp)) { Cloud.signOut(); syncMsg = "Signed out. Playlists stay on this device." }
+            }
+            if (syncMsg.isNotBlank()) Text(syncMsg, fontSize = 14.sp, color = HubMuted)
+        } else {
+            Text("Not signed in. Sign in to keep your playlists and favorites on all your devices.", fontSize = 15.sp, color = HubMuted)
+            Spacer(Modifier.height(6.dp))
+            FocusButton("Sign in or create account", Modifier.width(300.dp).height(50.dp), focusRequester = first) { onOpen(Screen.Account) }
+        }
+
+        Spacer(Modifier.height(22.dp))
+        Text("Playlists", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Repo.playlists.forEach { pl ->
+            val isActive = pl.id == Repo.activeId
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(pl.name + if (isActive) "   (in use)" else "", fontSize = 18.sp, fontWeight = FontWeight.Medium,
+                        color = if (isActive) HubGreen else Color.White)
+                    Text("${pl.username} @ ${pl.server}", fontSize = 13.sp, color = HubMuted, maxLines = 1)
+                }
+                if (!isActive) FocusButton("Use", Modifier.width(90.dp).height(46.dp)) { Repo.selectPlaylist(pl.id) }
+                FocusButton("Remove", Modifier.width(110.dp).height(46.dp)) { Repo.removePlaylist(pl.id) }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        FocusButton("Log out", Modifier.width(380.dp).height(56.dp)) {
-            Repo.logout()
-            onLoggedOut()
+        Spacer(Modifier.height(8.dp))
+        FocusButton("Add another playlist", Modifier.width(300.dp).height(50.dp)) { onOpen(Screen.Setup) }
+        if (active != null) {
+            Spacer(Modifier.height(6.dp))
+            Text("In use: ${active.name}. $info", fontSize = 14.sp, color = HubMuted)
+            Text(Repo.status, fontSize = 14.sp, color = HubMuted)
+            Spacer(Modifier.height(10.dp))
+            FocusButton(if (busy) "Refreshing..." else "Refresh channel lists now", Modifier.width(340.dp).height(50.dp)) {
+                if (!busy) { busy = true; scope.launch { Repo.refresh(force = true); Epg.load(force = true); busy = false } }
+            }
         }
     }
 }

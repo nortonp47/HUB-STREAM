@@ -5,24 +5,45 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.File
+import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 enum class Kind(val label: String) { Live("Live TV"), Movies("Movies"), Series("Shows") }
 
+data class Playlist(val id: String, val name: String, val server: String, val username: String, val password: String)
+
 /**
- * Everything the app knows about the provider: login (kept only on this device), the
- * downloaded catalogs (cached on disk so the app opens instantly), and favorites.
+ * Everything the app knows about the provider(s): saved playlists (several allowed, one active),
+ * the downloaded catalogs of the active one (cached on disk), and favorites. Playlists and favorites
+ * sync through the HUB account when signed in.
  */
 object Repo {
     private lateinit var appContext: Context
     private const val PREFS = "hub"
     private const val CACHE_MAX_AGE_MS = 6L * 60 * 60 * 1000
+    private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    var creds: Credentials? = null
+    var playlists by mutableStateOf<List<Playlist>>(emptyList())
         private set
-    var api: XtreamApi? = null
+    var activeId by mutableStateOf("")
         private set
+
+    val active: Playlist? get() = playlists.firstOrNull { it.id == activeId }
+    val creds: Credentials? get() = active?.let { Credentials(it.server, it.username, it.password) }
+    val api: XtreamApi? get() = creds?.let { c -> apiFor(c) }
+    private var apiCache: Pair<Credentials, XtreamApi>? = null
+    private fun apiFor(c: Credentials): XtreamApi {
+        apiCache?.let { if (it.first == c) return it.second }
+        return XtreamApi(c).also { apiCache = c to it }
+    }
+
+    val hasLogin: Boolean get() = active != null
 
     var liveCategories: List<Category> = emptyList(); private set
     var live: List<Channel> = emptyList(); private set
@@ -31,7 +52,6 @@ object Repo {
     var showCategories: List<Category> = emptyList(); private set
     var shows: List<Show> = emptyList(); private set
 
-    /** Shown on screen while loading. */
     var status by mutableStateOf("")
     var loaded by mutableStateOf(false)
 
@@ -39,61 +59,165 @@ object Repo {
     var favoritesVersion by mutableStateOf(0)
         private set
 
+    private fun prefs() = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
     fun init(context: Context) {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
-        val p = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val server = p.getString("server", null)
-        val user = p.getString("user", null)
-        val pass = p.getString("pass", null)
-        if (server != null && user != null && pass != null) setCreds(Credentials(server, user, pass))
-        favorites += p.getStringSet("favorites", emptySet()) ?: emptySet()
+        val p = prefs()
+        val json = p.getString("playlists", null)
+        if (json != null) {
+            val arr = JSONArray(json)
+            playlists = (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                Playlist(o.getString("id"), o.getString("name"), o.getString("server"), o.getString("username"), o.getString("password"))
+            }
+            activeId = p.getString("active", playlists.firstOrNull()?.id ?: "") ?: ""
+            favorites += p.getStringSet("favorites2", emptySet()) ?: emptySet()
+        } else {
+            // From the single-login versions: turn the old login and favorites into the first playlist.
+            val server = p.getString("server", null)
+            val user = p.getString("user", null)
+            val pass = p.getString("pass", null)
+            if (server != null && user != null && pass != null) {
+                val pl = Playlist(UUID.randomUUID().toString(), hostOf(server), server, user, pass)
+                playlists = listOf(pl)
+                activeId = pl.id
+                (p.getStringSet("favorites", emptySet()) ?: emptySet()).forEach { favorites += "${pl.id}|$it" }
+                appContext.filesDir.listFiles()?.filter { it.name.startsWith("cache_") }?.forEach { it.delete() }
+                persist()
+            }
+        }
+        if (active == null && playlists.isNotEmpty()) activeId = playlists.first().id
     }
 
-    private fun setCreds(c: Credentials) {
-        creds = c
-        api = XtreamApi(c)
+    private fun persist() {
+        val arr = JSONArray()
+        playlists.forEach {
+            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("server", it.server)
+                .put("username", it.username).put("password", it.password))
+        }
+        prefs().edit()
+            .putString("playlists", arr.toString())
+            .putString("active", activeId)
+            .putStringSet("favorites2", HashSet(favorites))
+            .apply()
     }
 
-    val hasLogin: Boolean get() = creds != null
+    private fun hostOf(server: String): String =
+        runCatching { java.net.URI(if (server.contains("://")) server else "http://$server").host }.getOrNull() ?: server
 
-    fun saveLogin(c: Credentials) {
-        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("server", c.server).putString("user", c.username).putString("pass", c.password).apply()
-        setCreds(c)
-        clearCache()
-        loaded = false
-    }
-
-    fun logout() {
-        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .remove("server").remove("user").remove("pass").apply()
-        creds = null
-        api = null
-        clearCache()
+    private fun resetLists() {
         live = emptyList(); liveCategories = emptyList()
         movies = emptyList(); movieCategories = emptyList()
         shows = emptyList(); showCategories = emptyList()
         loaded = false
+        status = ""
+        Epg.clear(deleteFile = false)
     }
 
-    // ---- favorites ----
-    fun isFavorite(kind: Kind, id: Int) = favorites.contains("${kind.name}:$id")
+    // ---- playlists ----
+
+    fun addPlaylist(name: String, c: Credentials) {
+        val finalName = name.ifBlank { hostOf(c.server) }.let { base ->
+            var n = base; var i = 2
+            while (playlists.any { it.name.equals(n, true) }) { n = "$base $i"; i++ }
+            n
+        }
+        val pl = Playlist(UUID.randomUUID().toString(), finalName, c.server.trim(), c.username.trim(), c.password.trim())
+        playlists = playlists + pl
+        activeId = pl.id
+        persist()
+        resetLists()
+        pushPlaylistsInBackground()
+    }
+
+    fun selectPlaylist(id: String) {
+        if (id == activeId || playlists.none { it.id == id }) return
+        activeId = id
+        persist()
+        resetLists()
+    }
+
+    fun removePlaylist(id: String) {
+        val victim = playlists.firstOrNull { it.id == id } ?: return
+        playlists = playlists.filter { it.id != id }
+        favorites.removeAll { it.startsWith("$id|") }
+        appContext.filesDir.listFiles()?.filter { it.name.startsWith("cache_${id}_") || it.name == "epg_$id.bin.gz" }?.forEach { it.delete() }
+        if (activeId == id) {
+            activeId = playlists.firstOrNull()?.id ?: ""
+            resetLists()
+        }
+        persist()
+        favoritesVersion++
+        if (Cloud.signedIn) io.launch {
+            runCatching { Cloud.deletePlaylist(victim.id) }
+            runCatching { Cloud.pushPlaylists(playlists) }
+        }
+    }
+
+    private fun pushPlaylistsInBackground() {
+        if (Cloud.signedIn) io.launch { runCatching { Cloud.pushPlaylists(playlists) } }
+    }
+
+    // ---- account sync ----
+
+    /** Pull playlists and favorites from the HUB account and merge. Returns a message. */
+    suspend fun syncWithAccount(): String = withContext(Dispatchers.IO) {
+        if (!Cloud.signedIn) return@withContext "Not signed in"
+        try {
+            val firstTime = prefs().getString("synced_for", null) != Cloud.email
+            val cloud = Cloud.pullPlaylists()
+            val cloudKeys = cloud.map { "${it.server.lowercase()}|${it.username}" }.toSet()
+            val localOnly = playlists.filter { "${it.server.lowercase()}|${it.username}" !in cloudKeys }
+            val merged = cloud + (if (firstTime) localOnly else emptyList())
+            val before = activeId
+            val oldActive = active
+            // If this device's active playlist is the same service as a cloud one, keep it active.
+            val newActive = merged.firstOrNull { it.id == before }
+                ?: oldActive?.let { o -> merged.firstOrNull { it.server.equals(o.server, true) && it.username == o.username } }
+                ?: merged.firstOrNull()
+            playlists = merged
+            activeId = newActive?.id ?: ""
+            if (activeId != before) resetLists()
+
+            val cloudFavs = Cloud.pullFavorites()
+            val localFavs = HashSet(favorites)
+            favorites.clear()
+            favorites += cloudFavs
+            if (firstTime) {
+                favorites += localFavs
+                (localFavs - cloudFavs).takeIf { it.isNotEmpty() }?.let { Cloud.pushFavorites(it) }
+                if (localOnly.isNotEmpty()) Cloud.pushPlaylists(merged)
+            }
+            favorites.removeAll { key -> merged.none { key.startsWith(it.id + "|") } }
+            persist()
+            prefs().edit().putString("synced_for", Cloud.email).apply()
+            favoritesVersion++
+            "Synced: ${merged.size} playlist(s), ${favorites.size} favorite(s)"
+        } catch (e: Exception) {
+            "Couldn't sync: ${e.message}"
+        }
+    }
+
+    // ---- favorites (per playlist) ----
+    private fun favKey(kind: Kind, id: Int) = "$activeId|${kind.name}:$id"
+
+    fun isFavorite(kind: Kind, id: Int) = favorites.contains(favKey(kind, id))
 
     fun toggleFavorite(kind: Kind, id: Int) {
-        val key = "${kind.name}:$id"
-        if (!favorites.remove(key)) favorites.add(key)
-        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putStringSet("favorites", HashSet(favorites)).apply()
+        val key = favKey(kind, id)
+        val added = !favorites.remove(key)
+        if (added) favorites.add(key)
+        persist()
         favoritesVersion++
+        if (Cloud.signedIn) io.launch {
+            runCatching { if (added) Cloud.pushFavorites(listOf(key)) else Cloud.deleteFavorite(key) }
+        }
     }
 
     // ---- cache ----
-    private fun cacheFile(name: String) = File(appContext.filesDir, "cache_$name.json")
-
-    private fun clearCache() {
-        appContext.filesDir.listFiles()?.filter { it.name.startsWith("cache_") }?.forEach { it.delete() }
-    }
+    private fun cacheFile(name: String) = File(appContext.filesDir, "cache_${activeId}_$name.json")
 
     private fun cached(name: String, force: Boolean, load: () -> String): String {
         val f = cacheFile(name)
@@ -110,18 +234,21 @@ object Repo {
 
     /** Downloads (or reads from cache) every catalog. Returns an error message or null on success. */
     suspend fun refresh(force: Boolean): String? = withContext(Dispatchers.IO) {
-        val api = api ?: return@withContext "Not logged in"
+        val api = api ?: return@withContext "No playlist"
+        val forId = activeId
         try {
             status = "Loading live categories..."
-            liveCategories = XtreamApi.parseCategories(cached("live_cat", force) { api.raw("get_live_categories") })
+            val lc = XtreamApi.parseCategories(cached("live_cat", force) { api.raw("get_live_categories") })
             status = "Loading live channels..."
-            live = XtreamApi.parseChannels(cached("live", force) { api.raw("get_live_streams") })
+            val lv = XtreamApi.parseChannels(cached("live", force) { api.raw("get_live_streams") })
             status = "Loading movies..."
-            movieCategories = XtreamApi.parseCategories(cached("vod_cat", force) { api.raw("get_vod_categories") })
-            movies = XtreamApi.parseMovies(cached("vod", force) { api.raw("get_vod_streams") })
+            val mc = XtreamApi.parseCategories(cached("vod_cat", force) { api.raw("get_vod_categories") })
+            val mv = XtreamApi.parseMovies(cached("vod", force) { api.raw("get_vod_streams") })
             status = "Loading shows..."
-            showCategories = XtreamApi.parseCategories(cached("series_cat", force) { api.raw("get_series_categories") })
-            shows = XtreamApi.parseShows(cached("series", force) { api.raw("get_series") })
+            val sc = XtreamApi.parseCategories(cached("series_cat", force) { api.raw("get_series_categories") })
+            val sh = XtreamApi.parseShows(cached("series", force) { api.raw("get_series") })
+            if (forId != activeId) return@withContext null // switched playlists meanwhile
+            liveCategories = lc; live = lv; movieCategories = mc; movies = mv; showCategories = sc; shows = sh
             status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
             loaded = true
             null
@@ -132,13 +259,14 @@ object Repo {
     }
 
     // ---- guide snippets, fetched on demand and kept for a few minutes ----
-    private val epgCache = HashMap<Int, Pair<Long, List<EpgEntry>>>()
+    private val epgCache = HashMap<String, Pair<Long, List<EpgEntry>>>()
 
     suspend fun epg(streamId: Int): List<EpgEntry> {
         val now = System.currentTimeMillis()
-        epgCache[streamId]?.let { if (now - it.first < 5 * 60_000L) return it.second }
+        val key = "$activeId:$streamId"
+        epgCache[key]?.let { if (now - it.first < 5 * 60_000L) return it.second }
         val list = withContext(Dispatchers.IO) { runCatching { api?.shortEpg(streamId) }.getOrNull() ?: emptyList() }
-        epgCache[streamId] = now to list
+        epgCache[key] = now to list
         return list
     }
 
