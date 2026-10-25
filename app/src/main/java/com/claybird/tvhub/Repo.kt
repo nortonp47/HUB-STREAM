@@ -351,16 +351,18 @@ object Repo {
     // ---- cache ----
     private fun cacheFile(id: String, name: String) = File(appContext.filesDir, "cache_${id}_$name.json")
 
-    private fun cached(id: String, name: String, force: Boolean, load: () -> String): String {
+    /** The cache file for a catalog, downloaded first if missing or stale. Never read into one String: it can be huge. */
+    private fun cached(id: String, name: String, force: Boolean, load: (File) -> Unit): File {
         val f = cacheFile(id, name)
         if (!force && f.exists() && System.currentTimeMillis() - f.lastModified() < CACHE_MAX_AGE_MS) {
-            return f.readText()
+            return f
         }
         return try {
-            load().also { f.writeText(it) }
+            load(f)
+            f
         } catch (e: Exception) {
             // Offline or the panel is down: an old copy is better than nothing.
-            if (f.exists()) f.readText() else throw e
+            if (f.exists()) f else throw e
         }
     }
 
@@ -393,15 +395,15 @@ object Repo {
                 JSONObject(api.raw(null)).optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }
             }.getOrNull()
             status = "Loading live categories..."
-            val lc = XtreamApi.parseCategories(cached(forId, "live_cat", force) { api.raw("get_live_categories") })
+            val lc = XtreamApi.parseCategories(cached(forId, "live_cat", force) { api.download("get_live_categories", it) })
             status = "Loading live channels..."
-            val lv = XtreamApi.parseChannels(cached(forId, "live", force) { api.raw("get_live_streams") })
+            val lv = XtreamApi.parseChannels(cached(forId, "live", force) { api.download("get_live_streams", it) })
             status = "Loading movies..."
-            val mc = XtreamApi.parseCategories(cached(forId, "vod_cat", force) { api.raw("get_vod_categories") })
-            val mv = XtreamApi.parseMovies(cached(forId, "vod", force) { api.raw("get_vod_streams") })
+            val mc = XtreamApi.parseCategories(cached(forId, "vod_cat", force) { api.download("get_vod_categories", it) })
+            val mv = XtreamApi.parseMovies(cached(forId, "vod", force) { api.download("get_vod_streams", it) })
             status = "Loading shows..."
-            val sc = XtreamApi.parseCategories(cached(forId, "series_cat", force) { api.raw("get_series_categories") })
-            val sh = XtreamApi.parseShows(cached(forId, "series", force) { api.raw("get_series") })
+            val sc = XtreamApi.parseCategories(cached(forId, "series_cat", force) { api.download("get_series_categories", it) })
+            val sh = XtreamApi.parseShows(cached(forId, "series", force) { api.download("get_series", it) })
             if (forId != activeId) return@withContext null // switched playlists meanwhile
             rawLiveCategories = lc; rawLive = lv; rawMovieCategories = mc; rawMovies = mv; rawShowCategories = sc; rawShows = sh
             Curation.load(forId)

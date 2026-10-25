@@ -1,12 +1,15 @@
 package com.claybird.tvhub
 
 import android.util.Base64
+import android.util.JsonReader
+import android.util.JsonToken
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.zip.GZIPInputStream
-import org.json.JSONArray
 import org.json.JSONObject
 
 data class Credentials(val server: String, val username: String, val password: String)
@@ -96,7 +99,7 @@ class XtreamApi(private val creds: Credentials) {
         return conn
     }
 
-    private fun fetch(url: String): String {
+    private fun <T> open(url: String, read: (InputStream) -> T): T {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 20000
         conn.readTimeout = 90000
@@ -106,16 +109,36 @@ class XtreamApi(private val creds: Credentials) {
             val code = conn.responseCode
             if (code != 200) throw XtreamException("Server answered HTTP $code")
             val raw = if (conn.contentEncoding.equals("gzip", true)) GZIPInputStream(conn.inputStream) else conn.inputStream
-            val out = ByteArrayOutputStream()
-            raw.use { it.copyTo(out) }
-            return out.toString("UTF-8")
+            return raw.use(read)
         } finally {
             conn.disconnect()
         }
     }
 
-    /** Raw JSON text for an API action, so callers can cache it. */
+    /** For small replies only (login, EPG snippets, one series). Catalogs go through [download]. */
+    private fun fetch(url: String): String = open(url) { input ->
+        val out = ByteArrayOutputStream()
+        input.copyTo(out)
+        out.toString("UTF-8")
+    }
+
+    /** Raw JSON text for a small API action. */
     fun raw(action: String?, extra: String = ""): String = fetch(apiUrl(action, extra))
+
+    /**
+     * Streams an API action's reply straight into [to] without holding it in memory. Catalogs
+     * (every channel/movie/show) can be well over 100 MB on big providers. [to] is only replaced
+     * once the whole reply has arrived, so a dropped connection leaves the old copy intact.
+     */
+    fun download(action: String, to: File) {
+        val tmp = File(to.path + ".part")
+        try {
+            open(apiUrl(action)) { input -> tmp.outputStream().use { input.copyTo(it) } }
+            if (!tmp.renameTo(to)) throw XtreamException("Couldn't save ${to.name}")
+        } finally {
+            tmp.delete()
+        }
+    }
 
     /** Checks the login. Returns a short description like "Active until 2026-12-01, 2 connections". */
     fun authenticate(): String {
@@ -176,60 +199,85 @@ class XtreamApi(private val creds: Credentials) {
             s
         }
 
-        private fun arrayOf(text: String): JSONArray = try { JSONArray(text) } catch (e: Exception) { JSONArray() }
-
-        fun parseCategories(text: String): List<Category> {
-            val arr = arrayOf(text)
-            return (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                Category(o.optString("category_id"), o.optString("category_name").trim())
-            }.distinctBy { it.id }
+        /**
+         * Reads a top-level JSON array of objects one item at a time, so only the results stay in
+         * memory, never the whole reply. Each object is handed over as its plain fields in text form
+         * (nested objects/arrays are skipped); the map is reused, so [make] must not keep it.
+         * Anything other than an array (an error object, an empty reply) gives an empty list.
+         */
+        private fun <T> readObjects(file: File, make: (Map<String, String>) -> T?): List<T> {
+            val out = ArrayList<T>()
+            try {
+                JsonReader(file.bufferedReader()).use { r ->
+                    r.isLenient = true
+                    if (r.peek() != JsonToken.BEGIN_ARRAY) return out
+                    r.beginArray()
+                    val fields = HashMap<String, String>()
+                    while (r.hasNext()) {
+                        if (r.peek() != JsonToken.BEGIN_OBJECT) { r.skipValue(); continue }
+                        fields.clear()
+                        r.beginObject()
+                        while (r.hasNext()) {
+                            val name = r.nextName()
+                            when (r.peek()) {
+                                JsonToken.STRING, JsonToken.NUMBER -> fields[name] = r.nextString()
+                                JsonToken.BOOLEAN -> fields[name] = r.nextBoolean().toString()
+                                else -> r.skipValue()
+                            }
+                        }
+                        r.endObject()
+                        make(fields)?.let { out += it }
+                    }
+                }
+            } catch (e: Exception) {
+                // Malformed or cut short: keep what was read so far.
+            }
+            return out
         }
 
-        fun parseChannels(text: String): List<Channel> {
-            val arr = arrayOf(text)
-            return (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        private fun Map<String, String>.str(key: String, fallback: String = "") = this[key] ?: fallback
+        private fun Map<String, String>.int(key: String) =
+            this[key]?.let { it.toIntOrNull() ?: it.toDoubleOrNull()?.toInt() } ?: 0
+
+        fun parseCategories(file: File): List<Category> =
+            readObjects(file) { o -> Category(o.str("category_id"), o.str("category_name").trim()) }
+                .distinctBy { it.id }
+
+        fun parseChannels(file: File): List<Channel> =
+            readObjects(file) { o ->
                 Channel(
-                    id = o.optInt("stream_id"),
-                    name = o.optString("name").trim(),
-                    categoryId = o.optString("category_id"),
-                    icon = o.optString("stream_icon"),
-                    epgId = o.optString("epg_channel_id"),
-                    archive = o.optInt("tv_archive", 0) == 1,
+                    id = o.int("stream_id"),
+                    name = o.str("name").trim(),
+                    categoryId = o.str("category_id"),
+                    icon = o.str("stream_icon"),
+                    epgId = o.str("epg_channel_id"),
+                    archive = o.int("tv_archive") == 1,
                 )
             }.distinctBy { it.id }
-        }
 
-        fun parseMovies(text: String): List<Movie> {
-            val arr = arrayOf(text)
-            return (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        fun parseMovies(file: File): List<Movie> =
+            readObjects(file) { o ->
                 Movie(
-                    id = o.optInt("stream_id"),
-                    name = o.optString("name").trim(),
-                    categoryId = o.optString("category_id"),
-                    icon = o.optString("stream_icon"),
-                    ext = o.optString("container_extension", "mp4"),
-                    rating = o.optString("rating"),
-                    added = o.optString("added").toLongOrNull() ?: 0L,
+                    id = o.int("stream_id"),
+                    name = o.str("name").trim(),
+                    categoryId = o.str("category_id"),
+                    icon = o.str("stream_icon"),
+                    ext = o.str("container_extension", "mp4"),
+                    rating = o.str("rating"),
+                    added = o.str("added").toLongOrNull() ?: 0L,
                 )
             }.distinctBy { it.id }
-        }
 
-        fun parseShows(text: String): List<Show> {
-            val arr = arrayOf(text)
-            return (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        fun parseShows(file: File): List<Show> =
+            readObjects(file) { o ->
                 Show(
-                    id = o.optInt("series_id"),
-                    name = o.optString("name").trim(),
-                    categoryId = o.optString("category_id"),
-                    icon = o.optString("cover"),
-                    rating = o.optString("rating"),
-                    plot = o.optString("plot"),
+                    id = o.int("series_id"),
+                    name = o.str("name").trim(),
+                    categoryId = o.str("category_id"),
+                    icon = o.str("cover"),
+                    rating = o.str("rating"),
+                    plot = o.str("plot"),
                 )
             }.distinctBy { it.id }
-        }
     }
 }
