@@ -36,6 +36,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -317,7 +318,7 @@ fun StreamPicker(item: MetaItem, onPlay: (String, String) -> Unit, onClose: () -
         val errors = ArrayList<String>()
         withContext(Dispatchers.IO) {
             kotlinx.coroutines.coroutineScope {
-                addons.map { a -> kotlinx.coroutines.async { runCatching { Stremio.streams(a, item.type, chosenId) }.onFailure { errors += "${a.name}: ${it.message}" }.getOrDefault(emptyList()) } }
+                addons.map { a -> async { runCatching { Stremio.streams(a, item.type, chosenId) }.onFailure { errors += "${a.name}: ${it.message}" }.getOrDefault(emptyList()) } }
                     .forEach { all += it.await() }
             }
         }
