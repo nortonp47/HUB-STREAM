@@ -33,6 +33,7 @@ data class Movie(
     val ext: String,
     val rating: String,
     val added: Long,
+    val year: Int = 0,
 )
 
 data class Show(
@@ -42,6 +43,8 @@ data class Show(
     val icon: String,
     val rating: String,
     val plot: String,
+    val year: Int = 0,
+    val added: Long = 0L,
 )
 
 data class Episode(
@@ -239,6 +242,14 @@ class XtreamApi(private val creds: Credentials) {
         private fun Map<String, String>.int(key: String) =
             this[key]?.let { it.toIntOrNull() ?: it.toDoubleOrNull()?.toInt() } ?: 0
 
+        private val yearRx = Regex("(?:\\(|[-\u2013]\\s*|\\b)((?:19|20)\\d{2})\\)?\\s*$|\\(((?:19|20)\\d{2})\\)")
+        /** A release year from a field like "2007-06-18" or from the title: "Heartland (2007)" or "28 Days - 2000". 0 if unknown. */
+        internal fun yearOf(name: String, field: String): Int {
+            Regex("^((?:19|20)\\d{2})").find(field.trim())?.let { return it.groupValues[1].toInt() }
+            yearRx.find(name.trim())?.let { m -> return (m.groupValues[1].ifEmpty { m.groupValues[2] }).toIntOrNull() ?: 0 }
+            return 0
+        }
+
         fun parseCategories(file: File): List<Category> =
             readObjects(file) { o -> Category(o.str("category_id"), o.str("category_name").trim()) }
                 .distinctBy { it.id }
@@ -265,6 +276,7 @@ class XtreamApi(private val creds: Credentials) {
                     ext = o.str("container_extension", "mp4"),
                     rating = o.str("rating"),
                     added = o.str("added").toLongOrNull() ?: 0L,
+                    year = yearOf(o.str("name"), o.str("year")),
                 )
             }.distinctBy { it.id }
 
@@ -277,6 +289,8 @@ class XtreamApi(private val creds: Credentials) {
                     icon = o.str("cover"),
                     rating = o.str("rating"),
                     plot = o.str("plot"),
+                    year = yearOf(o.str("name"), o.str("releaseDate").ifBlank { o.str("release_date") }.ifBlank { o.str("year") }),
+                    added = o.str("last_modified").toLongOrNull() ?: 0L,
                 )
             }.distinctBy { it.id }
     }

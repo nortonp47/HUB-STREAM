@@ -89,17 +89,16 @@ fun BrowseScreen(
     var focusedRow by remember { mutableStateOf<Row3?>(null) }
     val version = Repo.favoritesVersion
 
-    val rows: List<Row3> = remember(kind, selected, version, Repo.loaded) {
+    val sortKey = "${BrowseSort.mode}|${BrowseSort.minRating}|${BrowseSort.decade}"
+    val rows: List<Row3> = remember(kind, selected, version, Repo.loaded, sortKey) {
         when (kind) {
             Kind.Live -> Repo.live.asSequence()
                 .filter { selected == ALL || (selected == FAV && Repo.isFavorite(kind, it.id)) || it.categoryId == selected }
                 .map { Row3(it.id, it.name, it.icon, "", it) }.toList()
-            Kind.Movies -> Repo.movies.asSequence()
-                .filter { selected == ALL || (selected == FAV && Repo.isFavorite(kind, it.id)) || it.categoryId == selected }
-                .map { Row3(it.id, it.name, it.icon, if (it.rating.isBlank() || it.rating == "0") "" else "Rating ${it.rating}", it) }.toList()
-            Kind.Series -> Repo.shows.asSequence()
-                .filter { selected == ALL || (selected == FAV && Repo.isFavorite(kind, it.id)) || it.categoryId == selected }
-                .map { Row3(it.id, it.name, it.icon, if (it.rating.isBlank() || it.rating == "0") "" else "Rating ${it.rating}", it) }.toList()
+            Kind.Movies -> BrowseSort.movies(Repo.movies.filter { selected == ALL || (selected == FAV && Repo.isFavorite(kind, it.id)) || it.categoryId == selected })
+                .map { Row3(it.id, it.name, it.icon, BrowseSort.subtitle(it.rating, it.year), it) }
+            Kind.Series -> BrowseSort.shows(Repo.shows.filter { selected == ALL || (selected == FAV && Repo.isFavorite(kind, it.id)) || it.categoryId == selected })
+                .map { Row3(it.id, it.name, it.icon, BrowseSort.subtitle(it.rating, it.year), it) }
         }
     }
 
@@ -130,6 +129,7 @@ fun BrowseScreen(
 
         // ---- items ----
         Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            if (kind != Kind.Live) SortBar()
             Text(
                 text = "${rows.size} ${if (rows.size == 1) "item" else "items"}",
                 fontSize = 16.sp, color = HubMuted,

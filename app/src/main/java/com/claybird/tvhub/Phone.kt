@@ -111,15 +111,16 @@ fun PhoneBrowseScreen(
     var query by remember { mutableStateOf("") }
     val version = Repo.favoritesVersion
 
-    val rows: List<Row3> = remember(kind, selected, query, version, Repo.loaded) {
+    val sortKey = "${BrowseSort.mode}|${BrowseSort.minRating}|${BrowseSort.decade}"
+    val rows: List<Row3> = remember(kind, selected, query, version, Repo.loaded, sortKey) {
         val q = query.trim()
         fun ok(name: String, cat: String, id: Int) =
             (selected == ALL || (selected == FAV && Repo.isFavorite(kind, id)) || cat == selected) &&
                 (q.isEmpty() || name.contains(q, ignoreCase = true))
         when (kind) {
             Kind.Live -> Repo.live.filter { ok(it.name, it.categoryId, it.id) }.map { Row3(it.id, it.name, it.icon, "", it) }
-            Kind.Movies -> Repo.movies.filter { ok(it.name, it.categoryId, it.id) }.map { Row3(it.id, it.name, it.icon, "", it) }
-            Kind.Series -> Repo.shows.filter { ok(it.name, it.categoryId, it.id) }.map { Row3(it.id, it.name, it.icon, "", it) }
+            Kind.Movies -> BrowseSort.movies(Repo.movies.filter { ok(it.name, it.categoryId, it.id) }).map { Row3(it.id, it.name, it.icon, BrowseSort.subtitle(it.rating, it.year), it) }
+            Kind.Series -> BrowseSort.shows(Repo.shows.filter { ok(it.name, it.categoryId, it.id) }).map { Row3(it.id, it.name, it.icon, BrowseSort.subtitle(it.rating, it.year), it) }
         }
     }
 
@@ -147,6 +148,7 @@ fun PhoneBrowseScreen(
                 ) { Text(cat.name, fontSize = 15.sp, color = if (on) Color.Black else Color.White, maxLines = 1) }
             }
         }
+        if (kind != Kind.Live) SortBar()
         if (rows.isEmpty()) {
             Text(
                 if (selected == FAV) "No favorites yet. Touch and hold anything to add it." else "Nothing here.",
