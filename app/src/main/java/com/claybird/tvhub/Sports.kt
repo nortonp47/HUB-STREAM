@@ -51,14 +51,28 @@ object Sports {
         RegexOption.IGNORE_CASE,
     )
 
+    private val placeholder = Regex(
+        "\\b(no event|no game|no live|no programming|off air|offline|coming soon|to be announced|tba|event today|no stream)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    private val versus = Regex("(\\bvs\\.?\\b|\\bv\\b|\\bat\\b|@| - )", RegexOption.IGNORE_CASE)
+    private val falseFriends = Regex("bowling green|masters of|us open (house|garden)", RegexOption.IGNORE_CASE)
+
     fun classify(title: String, desc: String, channelName: String, category: String): Sport? {
         if (title.isBlank()) return null
+        if (placeholder.containsMatchIn(title)) return null
         if (replay.containsMatchIn(title) || replay.containsMatchIn(desc.take(120))) return null
         if (studio.containsMatchIn(title)) return null
-        val text = "$title $desc $channelName $category"
-        // Title first: a title that names a sport or league beats the channel's category.
-        for (s in Sport.values()) if (s.regex.containsMatchIn(title)) return s
-        for (s in Sport.values()) if (s.regex.containsMatchIn(text)) return s
+        val t = falseFriends.replace(title, " ")
+        // The program itself has to name a sport or league.
+        for (s in Sport.values()) if (s.regex.containsMatchIn(t)) return s
+        val d = falseFriends.replace(desc.take(200), " ")
+        for (s in Sport.values()) if (s.regex.containsMatchIn(d) && versus.containsMatchIn(title + " " + d.take(80))) return s
+        // A generic title ("Mavericks at Spurs") on a channel/category that names the sport.
+        if (versus.containsMatchIn(title)) {
+            val text = falseFriends.replace("$channelName $category", " ")
+            for (s in Sport.values()) if (s != Sport.Other && s.regex.containsMatchIn(text)) return s
+        }
         return null
     }
 

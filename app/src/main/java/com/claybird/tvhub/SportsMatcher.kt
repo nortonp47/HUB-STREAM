@@ -4,7 +4,7 @@ import kotlin.math.abs
 
 class GameCard(val game: SchedGame, val streams: List<SportItem>, val importance: Int)
 
-class SportsResult(val cards: List<GameCard>, val leftovers: List<Game>)
+class SportsResult(val cards: List<GameCard>, val leftovers: List<Game>, val diag: String = "")
 
 /**
  * Matches real scheduled games to the channels in your playlist.
@@ -70,7 +70,7 @@ object SportsMatcher {
     }
 
     fun build(now: Long, games: List<SchedGame>, items: List<SportItem>): SportsResult {
-        if (games.isEmpty()) return SportsResult(emptyList(), Games.group(items)) // feed unreachable: guide keywords only
+        if (games.isEmpty()) return SportsResult(emptyList(), Games.group(items), "Game feed returned nothing (offline or blocked), using guide keywords only.")
         val horizon = now + 8 * 3600
         val relevant = games.filter { (it.live || it.start in (now - 3600)..horizon) }
 
@@ -111,6 +111,7 @@ object SportsMatcher {
         for (g in relevant) claims[g] = g.networks.mapNotNull { networkKey(it) }
 
         val cards = ArrayList<GameCard>()
+        val ambiguous = HashMap<String, Int>()
         val matchedChannels = HashSet<Int>()
         for (g in relevant) {
             val found = LinkedHashMap<Int, SportItem>() // by channel id
@@ -152,7 +153,7 @@ object SportsMatcher {
                 if (key == "espnplus" || key == "peacock") continue // only matched through team names above
                 // Two games on the same network at once: can't tell which, so only team evidence counts.
                 val rivals = relevant.count { it !== g && overlaps(it, g) && claims[it]?.contains(key) == true }
-                if (rivals > 0) continue
+                if (rivals > 0) { ambiguous.merge(key, 1, Int::plus); continue }
                 for ((ch, _) in netChannels[key].orEmpty()) {
                     if (found.containsKey(ch.id)) continue
                     val prog = Prog(g.start, g.start + 3 * 3600, g.title, "")
@@ -170,7 +171,11 @@ object SportsMatcher {
         }
         // Games the feed doesn't cover (cricket, rugby, ...), from the guide keywords.
         val leftovers = Games.group(items.filter { it.channel.id !in matchedChannels && it.sport !in coveredSports })
-        return SportsResult(cards, leftovers)
+        val live = relevant.count { it.live }
+        val withStreams = cards.count { it.streams.isNotEmpty() }
+        val diag = "Feed: ${games.size} games ($live live now). Found channels for $withStreams of ${cards.size}." +
+            (if (ambiguous.isNotEmpty()) " Same-time games on one network, skipped: " + ambiguous.entries.joinToString { "${it.key} x${it.value}" } else "")
+        return SportsResult(cards, leftovers, diag)
     }
 
     private val coveredSports: Set<Sport> = LEAGUES.map { it.sport }.toSet()
