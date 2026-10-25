@@ -112,6 +112,7 @@ object Games {
         if (hd.containsMatchIn(item.channel.name)) s += 10
         if (sd.containsMatchIn(item.channel.name)) s -= 10
         if (Repo.isFavorite(Kind.Live, item.channel.id)) s += 5
+        if (Regex("\\b(waay|whnt|waff|wzdx)\\b", RegexOption.IGNORE_CASE).containsMatchIn(item.channel.name)) s += 25
         return s
     }
 

@@ -288,20 +288,35 @@ fun GuideScreen(isTv: Boolean, startOnFavorites: Boolean = false, onWatch: (List
     }
 }
 
-/** Live sports now (and later today), one row per game, filterable by sport. */
+private fun teamLabel(t: Team?, useShort: Boolean = true): String =
+    if (t == null) "" else (if (t.rank in 1..25) "#${t.rank} " else "") + (if (useShort) t.shortName.ifBlank { t.displayName } else t.displayName)
+
+private fun cardTitle(g: SchedGame): String {
+    val a = g.away
+    val h = g.home
+    if (a == null || h == null) return g.title
+    return if (g.league.sport == Sport.Soccer) "${teamLabel(h)} vs ${teamLabel(a)}" else "${teamLabel(a)} at ${teamLabel(h)}"
+}
+
+/**
+ * Sports: real scheduled games (from a public scoreboard feed) matched to your channels,
+ * most interesting first, with the best few channels for each.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SportsScreen(isTv: Boolean, onWatchGame: (List<Game>, Int, Int) -> Unit) {
-    var items by remember { mutableStateOf<List<Game>?>(null) }
+fun SportsScreen(isTv: Boolean, onWatch: (List<List<Channel>>, Int, Int) -> Unit) {
+    var result by remember { mutableStateOf<SportsResult?>(null) }
     var mode by remember { mutableStateOf("live") }
-    var sport by remember { mutableStateOf("all") }
+    var league by remember { mutableStateOf("all") }
     val epgVersion = Epg.version
 
     LaunchedEffect(epgVersion, Repo.loaded) {
         if (!Repo.loaded) return@LaunchedEffect
         while (true) {
-            items = withContext(Dispatchers.Default) {
-                Games.group(Sports.build(System.currentTimeMillis() / 1000, 8 * 3600))
+            result = withContext(Dispatchers.Default) {
+                val now = System.currentTimeMillis() / 1000
+                val feed = ScheduleFeed.games()
+                SportsMatcher.build(now, feed, Sports.build(now, 8 * 3600))
             }
             delay(60_000)
         }
@@ -310,87 +325,115 @@ fun SportsScreen(isTv: Boolean, onWatchGame: (List<Game>, Int, Int) -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text("Sports", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = HubGreen,
             modifier = Modifier.padding(start = 16.dp, top = 8.dp))
-        val all = items
-        if (all == null) {
-            Text(if (Epg.ready) "Looking for games..." else Epg.status.ifBlank { "Waiting for the guide..." },
+        val res = result
+        if (res == null) {
+            Text(if (Epg.ready) "Finding games..." else Epg.status.ifBlank { "Waiting for the guide..." },
                 fontSize = 16.sp, color = HubMuted, modifier = Modifier.padding(16.dp))
             return
         }
-        ChipRow(listOf("live" to "Live now (${all.count { it.live }})", "later" to "Later today"), mode) { mode = it }
-        val inMode = all.filter { (mode == "live") == it.live }
-        val counts = Sport.values().associateWith { s -> inMode.count { it.sport == s } }
+        val liveCards = res.cards.filter { it.game.live && it.streams.isNotEmpty() }
+        val laterCards = res.cards.filter { !it.game.live && it.streams.isNotEmpty() }
+        val missing = res.cards.filter { it.streams.isEmpty() }
         ChipRow(
-            listOf("all" to "All sports (${inMode.size})") +
-                Sport.values().filter { (counts[it] ?: 0) > 0 }.map { it.name to "${it.label} (${counts[it]})" },
-            sport,
-        ) { sport = it }
+            listOf("live" to "Live now (${liveCards.size})", "later" to "Later today (${laterCards.size})",
+                "missing" to "Not on my channels (${missing.size})"),
+            mode,
+        ) { mode = it; league = "all" }
 
-        val shown = inMode
-            .filter { sport == "all" || it.sport.name == sport }
-            .sortedWith(if (mode == "live") compareBy({ it.sport.ordinal }, { it.end }) else compareBy({ it.start }))
-        if (shown.isEmpty()) {
+        val cards = when (mode) { "live" -> liveCards; "later" -> laterCards; else -> missing }
+        val left = when (mode) { "live" -> res.leftovers.filter { it.live }; "later" -> res.leftovers.filter { !it.live }; else -> emptyList() }
+        val labels = (cards.map { it.game.league.label } + left.map { it.sport.label }).groupingBy { it }.eachCount()
+        ChipRow(listOf("all" to "All (${cards.size + left.size})") + labels.map { it.key to "${it.key} (${it.value})" }, league) { league = it }
+
+        val cardsShown = cards.filter { league == "all" || it.game.league.label == league }
+            .sortedWith(if (mode == "later") compareBy<GameCard>({ it.game.start / 1800 }).thenByDescending { it.importance } else compareByDescending { it.importance })
+        val leftShown = left.filter { league == "all" || it.sport.label == league }
+        if (cardsShown.isEmpty() && leftShown.isEmpty()) {
             Text(
-                if (mode == "live") "No live games found in the guide right now." else "Nothing starting in the next 8 hours.",
+                when (mode) { "live" -> "No live games found on your channels right now."; "later" -> "Nothing else on your channels in the next 8 hours."; else -> "Every game found is on one of your channels." },
                 fontSize = 16.sp, color = HubMuted, modifier = Modifier.padding(16.dp),
             )
         }
+        val playable = cardsShown.map { c -> c.streams.map { it.channel } } + leftShown.map { g -> g.streams.map { it.channel } }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(shown, key = { "${it.sport.name}:${it.title}:${it.start}" }) { game ->
+            items(cardsShown.size) { idx ->
+                val card = cardsShown[idx]
+                val g = card.game
                 var focused by remember { mutableStateOf(false) }
-                val now = System.currentTimeMillis() / 1000
-                val best = game.streams.first()
+                val fg = if (focused) Color.Black else Color.White
+                val sub = if (focused) Color.Black else HubMuted
                 Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
                             .onFocusChanged { focused = it.isFocused }
                             .background(if (focused) HubGreen else Color.Transparent)
                             .combinedClickable(
-                                onClick = { onWatchGame(shown, shown.indexOf(game), 0) },
-                                onLongClick = { Repo.toggleFavorite(Kind.Live, best.channel.id) },
+                                onClick = { if (card.streams.isNotEmpty()) onWatch(playable, idx, 0) },
+                                onLongClick = { card.streams.firstOrNull()?.let { Repo.toggleFavorite(Kind.Live, it.channel.id) } },
                             )
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (best.channel.icon.isNotBlank()) {
-                            AsyncImage(model = best.channel.icon, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.size(44.dp))
-                            Spacer(Modifier.width(12.dp))
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            val fg = if (focused) Color.Black else Color.White
-                            Text(game.title, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                "${game.sport.label}   " + if (game.live)
-                                    "Live until ${clockText(game.end)}  (${((game.end - now) / 60).coerceAtLeast(0)} min left)"
-                                else "Starts ${dayClockText(game.start)}",
-                                fontSize = 13.sp, color = if (focused) Color.Black else HubGreen,
-                            )
-                        }
+                        Text(cardTitle(g), fontSize = 18.sp, fontWeight = FontWeight.Medium, color = fg, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        val info = if (g.live) {
+                            val score = if (g.away != null && g.home != null) "   ${g.away.abbr} ${g.away.score} - ${g.home.abbr} ${g.home.score}" else ""
+                            "LIVE  ${g.detail}$score"
+                        } else dayClockText(g.start)
+                        Text("${g.league.label}   $info", fontSize = 13.sp, color = if (focused) Color.Black else HubGreen, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (g.networks.isNotEmpty()) Text("On ${g.networks.joinToString(", ")}", fontSize = 12.sp, color = sub, maxLines = 1)
+                        if (card.streams.isEmpty()) Text("Not found on your channels", fontSize = 12.sp, color = sub)
                     }
-                    // The best few channels showing it; the first is the one a plain tap plays.
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp),
-                        modifier = Modifier.padding(bottom = 4.dp),
-                    ) {
-                        val top = game.streams.take(3)
-                        items(top.size) { i ->
-                            val label = top[i].channel.name.replace(Regex("^[A-Za-z]{2,3}\\s*[|:]\\s*"), "")
-                            var f by remember { mutableStateOf(false) }
-                            Box(
-                                modifier = Modifier
-                                    .onFocusChanged { f = it.isFocused }
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(if (f) HubGreen else if (i == 0) Color(0xFF2F5A43) else HubSurface)
-                                    .clickable { onWatchGame(shown, shown.indexOf(game), i) }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                            ) {
-                                Text(label + if (i == 0) "  (best)" else "", fontSize = 13.sp, maxLines = 1,
-                                    color = if (f) Color.Black else Color.White)
-                            }
-                        }
-                    }
+                    if (card.streams.isNotEmpty()) StreamChips(card.streams) { i -> onWatch(playable, idx, i) }
                 }
+            }
+            if (leftShown.isNotEmpty()) {
+                item { Text("More from the guide", fontSize = 15.sp, color = HubMuted, modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp)) }
+            }
+            items(leftShown.size) { li ->
+                val game = leftShown[li]
+                val idx = cardsShown.size + li
+                var focused by remember { mutableStateOf(false) }
+                val now = System.currentTimeMillis() / 1000
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                            .onFocusChanged { focused = it.isFocused }
+                            .background(if (focused) HubGreen else Color.Transparent)
+                            .combinedClickable(onClick = { onWatch(playable, idx, 0) }, onLongClick = {})
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) {
+                        Text(game.title, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = if (focused) Color.Black else Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "${game.sport.label}   " + if (game.live) "Live until ${clockText(game.end)}  (${((game.end - now) / 60).coerceAtLeast(0)} min left)" else "Starts ${dayClockText(game.start)}",
+                            fontSize = 13.sp, color = if (focused) Color.Black else HubGreen,
+                        )
+                    }
+                    StreamChips(game.streams) { i -> onWatch(playable, idx, i) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamChips(streams: List<SportItem>, onPick: (Int) -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        modifier = Modifier.padding(bottom = 4.dp),
+    ) {
+        val top = streams.take(3)
+        items(top.size) { i ->
+            val label = top[i].channel.name.replace(Regex("^[A-Za-z]{2,3}\\s*[|:]\\s*"), "")
+            var f by remember { mutableStateOf(false) }
+            Box(
+                modifier = Modifier
+                    .onFocusChanged { f = it.isFocused }
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (f) HubGreen else if (i == 0) Color(0xFF2F5A43) else HubSurface)
+                    .clickable { onPick(i) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+                Text(label + if (i == 0) "  (best)" else "", fontSize = 13.sp, maxLines = 1, color = if (f) Color.Black else Color.White)
             }
         }
     }
