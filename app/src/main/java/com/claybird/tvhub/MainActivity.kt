@@ -116,6 +116,7 @@ sealed class Screen {
     object Curate : Screen()
     object Discover : Screen()
     object Addons : Screen()
+    object ProfilePicker : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -144,6 +145,12 @@ fun HubApp() {
             Repo.syncWithAccount()
             if (screen == Screen.Setup && Repo.hasLogin) screen = start
         }
+    }
+    // Only the admin sees settings, organizing and add-ons; others are sent back to the start.
+    LaunchedEffect(Profiles.activeId, screen) {
+        val s = screen
+        if (!Profiles.isAdmin && (s == Screen.Settings || s == Screen.Curate || s == Screen.Addons || s == Screen.Diagnostics || s == Screen.Setup && Repo.hasLogin))
+            screen = Screen.ProfilePicker
     }
     // Removing the last playlist sends you back to setup.
     LaunchedEffect(Repo.hasLogin) {
@@ -201,6 +208,7 @@ fun HubApp() {
                 onPlayUrl = { title, url -> PlayerActivity.vod(context, title, url) },
             )
             Screen.Addons -> AddonsScreen(isTv)
+            Screen.ProfilePicker -> ProfilesScreen(isTv, onDone = { screen = start })
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive, onCatchUp = catchUp)
             Screen.Search -> SearchScreen(
                 isTv = isTv, onLive = watchLive, onMovie = playMovie, onResume = resumeItem,
@@ -258,7 +266,8 @@ fun HubApp() {
                 Triple("Movies", Screen.Browse(Kind.Movies), current is Screen.Browse && current.kind == Kind.Movies),
                 Triple("Shows", Screen.Browse(Kind.Series),
                     (current is Screen.Browse && current.kind == Kind.Series) || (current is Screen.Episodes && current.back != Screen.Search && current.back != Screen.Discover)),
-                Triple("More", Screen.Settings, current == Screen.Settings),
+                Triple(if (Profiles.isAdmin) "More" else "Profile", if (Profiles.isAdmin) Screen.Settings else Screen.ProfilePicker,
+                    current == Screen.Settings || current == Screen.ProfilePicker),
             )
             Row(modifier = Modifier.fillMaxWidth().background(HubSurface)) {
                 tabs.forEach { (label, target, on) ->
@@ -294,6 +303,7 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
     val firstTile = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { firstTile.requestFocus() } }
 
+    val admin = Profiles.isAdmin
     val tiles = listOf<Pair<String, () -> Unit>>(
         "Guide" to { onOpen(Screen.Guide) },
         "Sports Now" to { onOpen(Screen.Sports) },
@@ -304,12 +314,13 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
         "Discover (IMDb)" to { onOpen(Screen.Discover) },
         "Add-ons" to { onOpen(Screen.Addons) },
         "Voice Search" to onSearch,
+        "Profile: ${Profiles.active.name}" to { onOpen(Screen.ProfilePicker) },
         "Favorite Channels" to { onOpen(Screen.Browse(Kind.Live, favorites = true)) },
         "Favorite Movies" to { onOpen(Screen.Browse(Kind.Movies, favorites = true)) },
         "Favorite Shows" to { onOpen(Screen.Browse(Kind.Series, favorites = true)) },
         "Settings" to { onOpen(Screen.Settings) },
         "Diagnostics" to { onOpen(Screen.Diagnostics) },
-    )
+    ).filter { admin || (it.first != "Add-ons" && it.first != "Settings" && it.first != "Diagnostics") }
 
     Column(modifier = Modifier.fillMaxSize().padding(48.dp)) {
         Text(

@@ -106,6 +106,7 @@ object Repo {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
         installCrashLog()
+        Profiles.init(appContext)
         AddonStore.init(appContext)
         val p = prefs()
         val json = p.getString("playlists", null)
@@ -161,6 +162,31 @@ object Repo {
                 }
             }
         }
+        if (!Profiles.isPrimary) loadProfileData()
+    }
+
+    private fun favPref(primary: Boolean = Profiles.isPrimary) = if (primary) "favorites2" else "fav_${Profiles.activeId}"
+    private fun histPref(primary: Boolean = Profiles.isPrimary) = if (primary) "history" else "hist_${Profiles.activeId}"
+
+    /** Loads the favorites and watch history of the active profile (or the admin's, when [primary]). */
+    private fun loadProfileData(primary: Boolean = Profiles.isPrimary) {
+        val p = prefs()
+        favorites.clear()
+        favorites += p.getStringSet(favPref(primary), emptySet()) ?: emptySet()
+        history = runCatching {
+            val arr = JSONArray(p.getString(histPref(primary), "[]"))
+            (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                HistoryItem(o.getString("key"), o.optString("pl"), o.getString("kind"), o.getString("id"), o.getString("title"),
+                    o.optString("icon"), o.optString("ext"), o.optLong("pos"), o.optLong("dur"), o.optLong("at"))
+            }
+        }.getOrDefault(emptyList())
+        favoritesVersion++
+    }
+
+    fun onProfileChanged() {
+        loadProfileData()
+        if (loaded) applyCuration()
     }
 
     private fun persistHistory() {
@@ -170,7 +196,7 @@ object Repo {
                 .put("title", it.title).put("icon", it.icon).put("ext", it.ext).put("pos", it.positionMs)
                 .put("dur", it.durationMs).put("at", it.updatedAt))
         }
-        prefs().edit().putString("history", arr.toString()).apply()
+        prefs().edit().putString(histPref(), arr.toString()).apply()
     }
 
     /** Remember that you watched something (and how far). [push] also sends it to your account. */
@@ -183,7 +209,7 @@ object Repo {
         val item = HistoryItem(key, playlistId, kind, itemId, title, icon, ext, positionMs, durationMs, System.currentTimeMillis())
         history = (listOf(item) + history.filter { it.key != key }).take(200)
         persistHistory()
-        if (push && Cloud.signedIn) io.launch { runCatching { Cloud.pushHistory(listOf(item)) } }
+        if (push && Cloud.signedIn && Profiles.isPrimary) io.launch { runCatching { Cloud.pushHistory(listOf(item)) } }
     }
 
     fun historyFor(vararg kinds: String): List<HistoryItem> =
@@ -199,7 +225,7 @@ object Repo {
             .putString("playlists", arr.toString())
             .putString("active", activeId)
             .putStringSet("enabled", HashSet(enabledIds))
-            .putStringSet("favorites2", HashSet(favorites))
+            .putStringSet(favPref(), HashSet(favorites))
             .apply()
     }
 
@@ -281,7 +307,13 @@ object Repo {
     // ---- account sync ----
 
     /** Pull playlists and favorites from the HUB account and merge. Returns a message. */
-    suspend fun syncWithAccount(): String = withContext(Dispatchers.IO) {
+    suspend fun syncWithAccount(): String {
+        val swap = !Profiles.isPrimary
+        if (swap) loadProfileData(true)
+        try { return syncInner() } finally { if (swap) loadProfileData(false) }
+    }
+
+    private suspend fun syncInner(): String = withContext(Dispatchers.IO) {
         if (!Cloud.signedIn) return@withContext "Not signed in"
         try {
             val firstTime = prefs().getString("synced_for", null) != Cloud.email
@@ -374,6 +406,7 @@ object Repo {
         val multi = enabled.size > 1
         val lcs = ArrayList<Category>(); val mcs = ArrayList<Category>(); val scs = ArrayList<Category>()
         val lvs = ArrayList<Channel>(); val mvs = ArrayList<Movie>(); val shs = ArrayList<Show>()
+        val kid = Profiles.isKid
         enabled.forEachIndexed { slot, pl ->
             val raw = raws[pl.id] ?: return@forEachIndexed
             val d = curationText(pl.id)?.let { CurationData.fromJson(it) } ?: CurationData()
@@ -390,16 +423,24 @@ object Repo {
             val lc = cats("L", raw.lc); val mc = cats("M", raw.mc); val sc = cats("S", raw.sc)
             val lv = lc.map { it.id }.toHashSet(); val mv = mc.map { it.id }.toHashSet(); val sv = sc.map { it.id }.toHashSet()
             val kl = raw.lc.map { it.id }.toHashSet(); val km = raw.mc.map { it.id }.toHashSet(); val ks = raw.sc.map { it.id }.toHashSet()
+            val nameL = raw.lc.associate { it.id to it.name }; val nameM = raw.mc.associate { it.id to it.name }; val nameS = raw.sc.associate { it.id to it.name }
             fun named(k: String, c: Category) = label(d.catNames["$k|${c.id}"] ?: c.name)
             lc.forEach { lcs += Category(ns(it.id), named("L", it)) }
             mc.forEach { mcs += Category(ns(it.id), named("M", it)) }
             sc.forEach { scs += Category(ns(it.id), named("S", it)) }
-            for (c in raw.lv) if ((c.categoryId in lv || c.categoryId !in kl) && "L|${c.id}" !in d.hiddenItems && !nameRules.matches(c.name))
+            for (c in raw.lv) if ((c.categoryId in lv || c.categoryId !in kl) && "L|${c.id}" !in d.hiddenItems && !nameRules.matches(c.name) &&
+                (!kid || KidSafe.live(c.name, nameL[c.categoryId].orEmpty())))
                 lvs += c.copy(id = tag(c.id), categoryId = ns(c.categoryId))
-            for (m in raw.mv) if ((m.categoryId in mv || m.categoryId !in km) && "M|${m.id}" !in d.hiddenItems && !nameRules.matches(m.name))
+            for (m in raw.mv) if ((m.categoryId in mv || m.categoryId !in km) && "M|${m.id}" !in d.hiddenItems && !nameRules.matches(m.name) &&
+                (!kid || KidSafe.title(m.name, nameM[m.categoryId].orEmpty())))
                 mvs += m.copy(id = tag(m.id), categoryId = ns(m.categoryId))
-            for (sh in raw.sh) if ((sh.categoryId in sv || sh.categoryId !in ks) && "S|${sh.id}" !in d.hiddenItems && !nameRules.matches(sh.name))
+            for (sh in raw.sh) if ((sh.categoryId in sv || sh.categoryId !in ks) && "S|${sh.id}" !in d.hiddenItems && !nameRules.matches(sh.name) &&
+                (!kid || KidSafe.title(sh.name, nameS[sh.categoryId].orEmpty())))
                 shs += sh.copy(id = tag(sh.id), categoryId = ns(sh.categoryId))
+        }
+        if (kid) {
+            val a = lvs.map { it.categoryId }.toHashSet(); val b = mvs.map { it.categoryId }.toHashSet(); val c = shs.map { it.categoryId }.toHashSet()
+            lcs.retainAll { it.id in a }; mcs.retainAll { it.id in b }; scs.retainAll { it.id in c }
         }
         live = lvs; movies = mvs; shows = shs
         liveCategories = lcs; movieCategories = mcs; showCategories = scs
@@ -433,7 +474,7 @@ object Repo {
         if (added) favorites.add(key)
         persist()
         favoritesVersion++
-        if (Cloud.signedIn) io.launch {
+        if (Cloud.signedIn && Profiles.isPrimary) io.launch {
             runCatching { if (added) Cloud.pushFavorites(listOf(key)) else Cloud.deleteFavorite(key) }
         }
     }

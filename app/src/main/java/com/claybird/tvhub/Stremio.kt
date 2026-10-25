@@ -216,11 +216,12 @@ fun DiscoverScreen(isTv: Boolean, onPlayMovie: (Movie, Long) -> Unit, onOpenShow
         val append = more > 0 && key == st.key
         if (!append && key == st.key && st.items.isNotEmpty()) return@LaunchedEffect
         loading = true; error = ""
-        val genreParam = if (st.catalog == "year") st.year.toString() else st.genre.ifEmpty { null }
+        val genreParam = if (st.catalog == "year") st.year.toString() else if (Profiles.isKid) st.genre.ifEmpty { "Family" } else st.genre.ifEmpty { null }
         runCatching {
             withContext(Dispatchers.IO) { Stremio.catalog(Stremio.CINEMETA, st.type, st.catalog, genreParam, if (append) st.items.size else 0) }
         }.onSuccess { got ->
-            st.items = if (append) (st.items + got).distinctBy { it.id } else got
+            val safe = if (Profiles.isKid) got.filter { !KidSafe.denied(it.name) } else got
+            st.items = if (append) (st.items + safe).distinctBy { it.id } else safe
             st.key = key
         }.onFailure { error = "Couldn't load: ${it.message}" }
         loading = false
@@ -233,11 +234,12 @@ fun DiscoverScreen(isTv: Boolean, onPlayMovie: (Movie, Long) -> Unit, onOpenShow
     Column(modifier = Modifier.fillMaxSize()) {
         Text("Discover", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = HubGreen, modifier = Modifier.padding(start = 16.dp, top = 8.dp))
         ChipRow(listOf("movie" to "Movies", "series" to "Shows"), st.type) { st.type = it; picked = null; more = 0 }
-        ChipRow(listOf("imdbRating" to "Top rated (IMDb)", "top" to "Popular", "year" to "By year"), st.catalog) { st.catalog = it; picked = null; more = 0 }
+        ChipRow(listOf("imdbRating" to "Top rated (IMDb)", "top" to "Popular") + (if (Profiles.isKid) emptyList() else listOf("year" to "By year")), st.catalog) { st.catalog = it; picked = null; more = 0 }
         if (st.catalog == "year") {
             ChipRow((2026 downTo 1990).map { it.toString() to it.toString() }, st.year.toString()) { st.year = it.toInt(); more = 0 }
         } else {
-            ChipRow(listOf("" to "All genres") + Stremio.movieGenres.map { it to it }, st.genre) { st.genre = it; more = 0 }
+            if (Profiles.isKid) ChipRow(listOf("" to "Family", "Animation" to "Animation"), st.genre) { st.genre = it; more = 0 }
+            else ChipRow(listOf("" to "All genres") + Stremio.movieGenres.map { it to it }, st.genre) { st.genre = it; more = 0 }
         }
 
         val p = picked

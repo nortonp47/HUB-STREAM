@@ -159,9 +159,6 @@ fun CurateScreen(isTv: Boolean) {
                     FocusButton("Hide Spanish / French categories", Modifier.fillMaxWidth().height(44.dp), textSize = 15.sp) {
                         Curation.edit { it.addCatRule("re:\\b(mexico|latin|french|telemundo|univision|dominican|espanol|spanish|france)\\b|^(MX|DMA|FR)\\s*\\|") }
                     }
-                    FocusButton("Hide stale ESPN Play (dated 2025)", Modifier.fillMaxWidth().height(44.dp), textSize = 15.sp) {
-                        Curation.edit { it.addCatRule("re:^ESPN Play$") }
-                    }
                     FocusButton("Hide divider channels (#### USA ####)", Modifier.fillMaxWidth().height(44.dp), textSize = 15.sp) {
                         Curation.edit { it.addNameRule("re:^[#=*_\\-\\s|]{2,}|[#=*]{3,}") }
                     }

@@ -291,6 +291,8 @@ fun SettingsScreen(isTv: Boolean, onOpen: (Screen) -> Unit) {
             Spacer(Modifier.height(6.dp))
             FocusButton("Stremio add-ons", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.Addons) }
             Spacer(Modifier.height(6.dp))
+            FocusButton("Profiles (kids, adults)", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.ProfilePicker) }
+            Spacer(Modifier.height(6.dp))
             Text("In use: ${active.name}. $info", fontSize = 14.sp, color = HubMuted)
             Text(Repo.status, fontSize = 14.sp, color = HubMuted)
             Spacer(Modifier.height(10.dp))
