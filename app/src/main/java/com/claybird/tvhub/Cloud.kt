@@ -161,6 +161,30 @@ object Cloud {
         call("POST", "/rest/v1/favorites?on_conflict=user_id,key", arr.toString(), token(), "resolution=merge-duplicates,return=minimal")
     }
 
+    fun pullHistory(): List<HistoryItem> {
+        val arr = JSONArray(call("GET", "/rest/v1/history?select=*&order=updated_at.desc&limit=300", bearer = token()))
+        return (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            HistoryItem(
+                o.getString("key"), o.optString("playlist_id"), o.getString("kind"), o.getString("item_id"),
+                o.getString("title"), o.optString("icon"), o.optString("ext"),
+                o.optLong("position_ms"), o.optLong("duration_ms"),
+                runCatching { java.time.OffsetDateTime.parse(o.getString("updated_at")).toInstant().toEpochMilli() }.getOrDefault(0L),
+            )
+        }
+    }
+
+    fun pushHistory(items: Collection<HistoryItem>) {
+        if (items.isEmpty()) return
+        val arr = JSONArray()
+        items.forEach { h ->
+            arr.put(JSONObject().put("key", h.key).put("kind", h.kind).put("item_id", h.itemId).put("title", h.title)
+                .put("icon", h.icon).put("ext", h.ext).put("position_ms", h.positionMs).put("duration_ms", h.durationMs)
+                .put("playlist_id", h.playlistId).put("updated_at", java.time.Instant.ofEpochMilli(h.updatedAt).toString()))
+        }
+        call("POST", "/rest/v1/history?on_conflict=user_id,key", arr.toString(), token(), "resolution=merge-duplicates,return=minimal")
+    }
+
     fun deleteFavorite(key: String) {
         call("DELETE", "/rest/v1/favorites?key=eq.${enc(key)}", bearer = token())
     }

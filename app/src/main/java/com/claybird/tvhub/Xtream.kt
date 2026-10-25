@@ -72,6 +72,14 @@ class XtreamApi(private val creds: Credentials) {
 
     fun liveUrl(id: Int) = "$base/live/${enc(creds.username)}/${enc(creds.password)}/$id.m3u8"
     fun liveTsUrl(id: Int) = "$base/live/${enc(creds.username)}/${enc(creds.password)}/$id.ts"
+    /** Catch-up (timeshift) link for a past show on a channel that keeps an archive. */
+    fun catchupUrl(streamId: Int, startSec: Long, durationMin: Int, zoneId: String?): String {
+        val zone = runCatching { java.time.ZoneId.of(zoneId ?: "UTC") }.getOrDefault(java.time.ZoneOffset.UTC)
+        val t = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd:HH-mm")
+            .format(java.time.Instant.ofEpochSecond(startSec).atZone(zone))
+        return "$base/timeshift/${enc(creds.username)}/${enc(creds.password)}/$durationMin/$t/$streamId.m3u8"
+    }
+
     fun movieUrl(id: Int, ext: String) =
         "$base/movie/${enc(creds.username)}/${enc(creds.password)}/$id.${ext.ifBlank { "mp4" }}"
     fun episodeUrl(id: String, ext: String) =

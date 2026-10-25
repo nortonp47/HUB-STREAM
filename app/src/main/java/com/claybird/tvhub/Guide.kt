@@ -90,7 +90,11 @@ fun ChipRow(items: List<Pair<String, String>>, selected: String, onSelect: (Stri
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun GuideScreen(isTv: Boolean, startOnFavorites: Boolean = false, onWatch: (List<Channel>, Int) -> Unit) {
+fun GuideScreen(
+    isTv: Boolean, startOnFavorites: Boolean = false,
+    onWatch: (List<Channel>, Int) -> Unit,
+    onCatchUp: (Channel, Prog) -> Unit = { _, _ -> },
+) {
     if (!Repo.loaded) {
         Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
             Text("Guide", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = HubGreen)
@@ -110,10 +114,10 @@ fun GuideScreen(isTv: Boolean, startOnFavorites: Boolean = false, onWatch: (List
     val epgVersion = Epg.version
     val favVersion = Repo.favoritesVersion
 
-    // The window the grid covers: from an hour ago to 29 hours ahead, on half-hour marks.
+    // The window the grid covers: from 6 hours ago (for catch-up) to 30 hours ahead, on half-hour marks.
     val nowSec = remember { System.currentTimeMillis() / 1000 }
-    val winStart = remember { (nowSec / 1800) * 1800 - 3600 }
-    val winEnd = winStart + 30 * 3600
+    val winStart = remember { (nowSec / 1800) * 1800 - 6 * 3600 }
+    val winEnd = winStart + 36 * 3600
     val totalWidth = ((winEnd - winStart) / 60f * dpPerMin).dp
     val hScroll = rememberScrollState()
     val density = LocalDensity.current
@@ -170,7 +174,11 @@ fun GuideScreen(isTv: Boolean, startOnFavorites: Boolean = false, onWatch: (List
                     Text("${pc.name}   ${clockText(pp.start)} - ${clockText(pp.end)}", fontSize = 13.sp, color = HubGreen, maxLines = 1)
                     if (pp.desc.isNotBlank()) Text(pp.desc, fontSize = 13.sp, color = HubMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                if (!isTv) {
+                val past = pp.end <= nowSec
+                if (past && pc.archive) {
+                    Spacer(Modifier.width(10.dp))
+                    FocusButton("Replay", Modifier.width(100.dp).height(46.dp)) { onCatchUp(pc, pp) }
+                } else if (!past && !isTv) {
                     Spacer(Modifier.width(10.dp))
                     FocusButton("Watch", Modifier.width(100.dp).height(46.dp)) {
                         onWatch(channels, channels.indexOf(pc).coerceAtLeast(0))
@@ -268,7 +276,8 @@ fun GuideScreen(isTv: Boolean, startOnFavorites: Boolean = false, onWatch: (List
                                             .background(if (focused) HubGreen else if (isNow) Color(0xFF3A4254) else Color(0xFF232836))
                                             .clickable {
                                                 pickedChannel = ch; pickedProg = p
-                                                if (isTv) onWatch(channels, channels.indexOf(ch))
+                                                if (p.end <= nowSec) { if (ch.archive) onCatchUp(ch, p) }
+                                                else if (isTv) onWatch(channels, channels.indexOf(ch))
                                             }
                                             .padding(horizontal = 8.dp, vertical = 4.dp),
                                         verticalArrangement = Arrangement.Center,

@@ -111,6 +111,7 @@ sealed class Screen {
     object Diagnostics : Screen()
     object Guide : Screen()
     object Sports : Screen()
+    object Search : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -157,6 +158,23 @@ fun HubApp() {
         Repo.zapIndex = index
         PlayerActivity.live(context)
     }
+    val playMovie: (Movie, Long) -> Unit = { m, resume ->
+        PlayerActivity.vod(context, m.name, Repo.api!!.movieUrl(m.id, m.ext), "Movie", m.id.toString(), m.icon, m.ext, resume)
+    }
+    val resumeItem: (HistoryItem) -> Unit = { h ->
+        when (h.kind) {
+            "Live" -> {
+                val i = Repo.live.indexOfFirst { it.id.toString() == h.itemId }
+                if (i >= 0) watchLive(Repo.live, i)
+            }
+            "Movie" -> PlayerActivity.vod(context, h.title, Repo.api!!.movieUrl(h.itemId.toInt(), h.ext), "Movie", h.itemId, h.icon, h.ext, h.positionMs)
+            "Episode" -> PlayerActivity.vod(context, h.title, Repo.api!!.episodeUrl(h.itemId, h.ext), "Episode", h.itemId, h.icon, h.ext, h.positionMs)
+        }
+    }
+    val catchUp: (Channel, Prog) -> Unit = { ch, p ->
+        val mins = ((p.end - p.start) / 60).toInt().coerceAtLeast(1)
+        PlayerActivity.vod(context, "${ch.name}: ${p.title}", Repo.api!!.catchupUrl(ch.id, p.start, mins + 5, Repo.serverZone))
+    }
 
     val body: @Composable () -> Unit = {
         when (val s = screen) {
@@ -168,7 +186,11 @@ fun HubApp() {
             Screen.Account -> AccountScreen(isTv, onDone = { screen = if (Repo.hasLogin) start else Screen.Setup })
             Screen.Settings -> SettingsScreen(isTv, onOpen = { screen = it })
             Screen.Diagnostics -> DiagnosticsScreen()
-            Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive)
+            Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive, onCatchUp = catchUp)
+            Screen.Search -> SearchScreen(
+                isTv = isTv, onLive = watchLive, onMovie = playMovie, onResume = resumeItem,
+                onShow = { screen = Screen.Episodes(it, Screen.Search) },
+            )
             Screen.Sports -> SportsScreen(isTv = isTv, onWatch = { lists, itemIndex, streamIndex ->
                 // One channel per game goes in the zap list; the next best become automatic fallbacks.
                 val chosen = lists[itemIndex][streamIndex]
@@ -184,7 +206,8 @@ fun HubApp() {
                         Kind.Live -> watchLive(rows.map { it.ref as Channel }, index)
                         Kind.Movies -> {
                             val m = rows[index].ref as Movie
-                            PlayerActivity.vod(context, m.name, Repo.api!!.movieUrl(m.id, m.ext))
+                            val resume = Repo.historyFor("Movie").firstOrNull { it.itemId == m.id.toString() }?.positionMs ?: 0L
+                            playMovie(m, resume)
                         }
                         Kind.Series -> {}
                     }
@@ -195,7 +218,9 @@ fun HubApp() {
             }
             is Screen.Episodes -> {
                 val playEp: (Show, Episode) -> Unit = { show, ep ->
-                    PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext))
+                    val resume = Repo.historyFor("Episode").firstOrNull { it.itemId == ep.id }?.positionMs ?: 0L
+                    PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext),
+                        "Episode", ep.id, show.icon, ep.ext, resume)
                 }
                 if (isTv) EpisodesScreen(s.show, playEp) else PhoneEpisodesScreen(s.show, playEp)
             }
@@ -211,11 +236,11 @@ fun HubApp() {
             val current = screen
             val tabs = listOf(
                 Triple("Guide", Screen.Guide, current == Screen.Guide),
-                Triple("Live", Screen.Browse(Kind.Live), current is Screen.Browse && current.kind == Kind.Live),
+                Triple("Search", Screen.Search, current == Screen.Search),
                 Triple("Sports", Screen.Sports, current == Screen.Sports),
                 Triple("Movies", Screen.Browse(Kind.Movies), current is Screen.Browse && current.kind == Kind.Movies),
                 Triple("Shows", Screen.Browse(Kind.Series),
-                    (current is Screen.Browse && current.kind == Kind.Series) || current is Screen.Episodes),
+                    (current is Screen.Browse && current.kind == Kind.Series) || (current is Screen.Episodes && current.back !is Screen.Search)),
                 Triple("More", Screen.Settings, current == Screen.Settings),
             )
             Row(modifier = Modifier.fillMaxWidth().background(HubSurface)) {
@@ -244,7 +269,8 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
         "Live TV" to { onOpen(Screen.Browse(Kind.Live)) },
         "Movies" to { onOpen(Screen.Browse(Kind.Movies)) },
         "Shows" to { onOpen(Screen.Browse(Kind.Series)) },
-        "Search" to onSearch,
+        "Search" to { onOpen(Screen.Search) },
+        "Voice Search" to onSearch,
         "Favorite Channels" to { onOpen(Screen.Browse(Kind.Live, favorites = true)) },
         "Favorite Movies" to { onOpen(Screen.Browse(Kind.Movies, favorites = true)) },
         "Favorite Shows" to { onOpen(Screen.Browse(Kind.Series, favorites = true)) },

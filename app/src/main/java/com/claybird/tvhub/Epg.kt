@@ -86,7 +86,7 @@ object Epg {
         val wanted = HashSet<String>()
         for (c in Repo.live) if (c.epgId.isNotBlank()) wanted.add(c.epgId.lowercase())
         val now = System.currentTimeMillis() / 1000
-        val minT = now - 2 * 3600
+        val minT = now - 12 * 3600
         val maxT = now + 48 * 3600
 
         val conn = api.openXmltv()

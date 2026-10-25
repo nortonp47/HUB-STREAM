@@ -84,6 +84,12 @@ class PlayerActivity : ComponentActivity() {
     private var hideJob: Job? = null
     private var epgJob: Job? = null
     private var listener: Player.Listener? = null
+    // What to remember in "continue watching" for movies and episodes.
+    private var histKind = ""
+    private var histId = ""
+    private var histIcon = ""
+    private var histExt = ""
+    private var lastSaved = 0L
 
     private val isTv by lazy { packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
 
@@ -112,7 +118,13 @@ class PlayerActivity : ComponentActivity() {
             val url = intent.getStringExtra(EXTRA_URL) ?: run { finish(); return }
             title = intent.getStringExtra(EXTRA_TITLE) ?: ""
             subtitle = ""
-            start(url, null)
+            histKind = intent.getStringExtra(EXTRA_KIND) ?: ""
+            histId = intent.getStringExtra(EXTRA_ITEM) ?: ""
+            histIcon = intent.getStringExtra(EXTRA_ICON) ?: ""
+            histExt = intent.getStringExtra(EXTRA_EXT) ?: ""
+            val resume = intent.getLongExtra(EXTRA_RESUME, 0L)
+            start(url, null, resume)
+            if (histKind.isNotEmpty()) saveProgress(push = true)
         }
 
         setContent {
@@ -167,6 +179,7 @@ class PlayerActivity : ComponentActivity() {
                 positionMs = player.currentPosition
                 durationMs = player.duration.coerceAtLeast(0)
                 behindLive = isLive && player.isCurrentMediaItemLive && player.currentLiveOffset > 6000
+                if (!isLive && histKind.isNotEmpty() && System.currentTimeMillis() - lastSaved > 15_000) saveProgress(push = false)
                 delay(500)
             }
         }
@@ -216,11 +229,11 @@ class PlayerActivity : ComponentActivity() {
         .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist("Hub").build())
         .build()
 
-    private fun start(url: String, alt: String?) {
+    private fun start(url: String, alt: String?, startMs: Long = 0L) {
         altUrl = alt
         triedAlt = false
         message = ""
-        player.setMediaItem(mediaItem(url))
+        if (startMs > 0) player.setMediaItem(mediaItem(url), startMs) else player.setMediaItem(mediaItem(url))
         player.prepare()
         player.playWhenReady = true
         playing = true
@@ -250,6 +263,7 @@ class PlayerActivity : ComponentActivity() {
         title = c.name
         subtitle = ""
         start(item.url, item.altUrl)
+        Repo.recordPlay("Live", c.id.toString(), c.name, c.icon, "", 0, 0, push = true)
         showOverlay()
         epgJob?.cancel()
         epgJob = lifecycleScope.launch {
@@ -422,7 +436,17 @@ class PlayerActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun saveProgress(push: Boolean) {
+        if (histKind.isEmpty() || isLive) return
+        lastSaved = System.currentTimeMillis()
+        val dur = player.duration.coerceAtLeast(0)
+        var pos = player.currentPosition
+        if (dur > 0 && (pos > dur * 0.95 || dur - pos < 60_000)) pos = 0 // finished: start over next time
+        Repo.recordPlay(histKind, histId, title, histIcon, histExt, pos, dur, push)
+    }
+
     override fun onStop() {
+        saveProgress(push = true)
         // TV: stop when the screen is left. Phone: keep playing (audio) in the background.
         if (isTv) player.pause()
         super.onStop()
@@ -444,15 +468,26 @@ class PlayerActivity : ComponentActivity() {
         private const val EXTRA_LIVE = "live"
         private const val EXTRA_URL = "url"
         private const val EXTRA_TITLE = "title"
+        private const val EXTRA_KIND = "kind"
+        private const val EXTRA_ITEM = "item"
+        private const val EXTRA_ICON = "icon"
+        private const val EXTRA_EXT = "ext"
+        private const val EXTRA_RESUME = "resume"
 
         fun live(context: Context) {
             context.startActivity(Intent(context, PlayerActivity::class.java).putExtra(EXTRA_LIVE, true))
         }
 
-        fun vod(context: Context, title: String, url: String) {
+        /** [kind] is "Movie" or "Episode" to be remembered in continue watching; empty for one-offs like catch-up. */
+        fun vod(
+            context: Context, title: String, url: String,
+            kind: String = "", itemId: String = "", icon: String = "", ext: String = "", resumeMs: Long = 0L,
+        ) {
             context.startActivity(
                 Intent(context, PlayerActivity::class.java)
                     .putExtra(EXTRA_LIVE, false).putExtra(EXTRA_TITLE, title).putExtra(EXTRA_URL, url)
+                    .putExtra(EXTRA_KIND, kind).putExtra(EXTRA_ITEM, itemId).putExtra(EXTRA_ICON, icon)
+                    .putExtra(EXTRA_EXT, ext).putExtra(EXTRA_RESUME, resumeMs)
             )
         }
     }

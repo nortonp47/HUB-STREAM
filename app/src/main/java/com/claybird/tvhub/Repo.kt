@@ -14,6 +14,12 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Something you watched: a channel, a movie, or an episode, with where you stopped. */
+data class HistoryItem(
+    val key: String, val playlistId: String, val kind: String, val itemId: String, val title: String,
+    val icon: String, val ext: String, val positionMs: Long, val durationMs: Long, val updatedAt: Long,
+)
+
 enum class Kind(val label: String) { Live("Live TV"), Movies("Movies"), Series("Shows") }
 
 data class Playlist(val id: String, val name: String, val server: String, val username: String, val password: String)
@@ -55,6 +61,11 @@ object Repo {
     var status by mutableStateOf("")
     var loaded by mutableStateOf(false)
 
+    var history by mutableStateOf<List<HistoryItem>>(emptyList())
+        private set
+    var serverZone: String? = null
+        private set
+
     private val favorites = HashSet<String>()
     var favoritesVersion by mutableStateOf(0)
         private set
@@ -89,7 +100,40 @@ object Repo {
             }
         }
         if (active == null && playlists.isNotEmpty()) activeId = playlists.first().id
+        prefs().getString("history", null)?.let { j ->
+            runCatching {
+                val arr = JSONArray(j)
+                history = (0 until arr.length()).map {
+                    val o = arr.getJSONObject(it)
+                    HistoryItem(o.getString("key"), o.optString("pl"), o.getString("kind"), o.getString("id"), o.getString("title"),
+                        o.optString("icon"), o.optString("ext"), o.optLong("pos"), o.optLong("dur"), o.optLong("at"))
+                }
+            }
+        }
     }
+
+    private fun persistHistory() {
+        val arr = JSONArray()
+        history.take(200).forEach {
+            arr.put(JSONObject().put("key", it.key).put("pl", it.playlistId).put("kind", it.kind).put("id", it.itemId)
+                .put("title", it.title).put("icon", it.icon).put("ext", it.ext).put("pos", it.positionMs)
+                .put("dur", it.durationMs).put("at", it.updatedAt))
+        }
+        prefs().edit().putString("history", arr.toString()).apply()
+    }
+
+    /** Remember that you watched something (and how far). [push] also sends it to your account. */
+    fun recordPlay(kind: String, itemId: String, title: String, icon: String, ext: String, positionMs: Long, durationMs: Long, push: Boolean) {
+        if (activeId.isEmpty()) return
+        val key = "$activeId|$kind:$itemId"
+        val item = HistoryItem(key, activeId, kind, itemId, title, icon, ext, positionMs, durationMs, System.currentTimeMillis())
+        history = (listOf(item) + history.filter { it.key != key }).take(200)
+        persistHistory()
+        if (push && Cloud.signedIn) io.launch { runCatching { Cloud.pushHistory(listOf(item)) } }
+    }
+
+    fun historyFor(vararg kinds: String): List<HistoryItem> =
+        history.filter { it.playlistId == activeId && it.kind in kinds }
 
     private fun persist() {
         val arr = JSONArray()
@@ -113,6 +157,7 @@ object Repo {
         shows = emptyList(); showCategories = emptyList()
         loaded = false
         status = ""
+        serverZone = null
         Epg.clear(deleteFile = false)
     }
 
@@ -194,6 +239,15 @@ object Repo {
             persist()
             prefs().edit().putString("synced_for", Cloud.email).apply()
             favoritesVersion++
+            runCatching {
+                val cloudHist = Cloud.pullHistory()
+                val byKey = HashMap<String, HistoryItem>()
+                (history + cloudHist).forEach { h -> val o = byKey[h.key]; if (o == null || h.updatedAt > o.updatedAt) byKey[h.key] = h }
+                val localNewer = history.filter { l -> cloudHist.none { it.key == l.key && it.updatedAt >= l.updatedAt } }
+                history = byKey.values.sortedByDescending { it.updatedAt }.take(200)
+                persistHistory()
+                if (localNewer.isNotEmpty()) Cloud.pushHistory(localNewer.take(100))
+            }
             "Synced: ${merged.size} playlist(s), ${favorites.size} favorite(s)"
         } catch (e: Exception) {
             "Couldn't sync: ${e.message}"
@@ -237,6 +291,9 @@ object Repo {
         val api = api ?: return@withContext "No playlist"
         val forId = activeId
         try {
+            if (serverZone == null) serverZone = runCatching {
+                JSONObject(api.raw(null)).optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }
+            }.getOrNull()
             status = "Loading live categories..."
             val lc = XtreamApi.parseCategories(cached("live_cat", force) { api.raw("get_live_categories") })
             status = "Loading live channels..."
