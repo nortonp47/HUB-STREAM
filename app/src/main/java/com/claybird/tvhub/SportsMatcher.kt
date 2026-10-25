@@ -26,12 +26,16 @@ object SportsMatcher {
     private fun normalize(s: String): String =
         s.lowercase().replace("&", " and ").replace("+", "plus").replace("'", "").replace(norm, " ").trim()
 
-    private fun words(s: String) = normalize(s).split(' ').filter { it.length >= 4 && it !in stop }
+    // Three-letter schools (SMU, TCU, LSU, BYU, UCF...) count as words, minus common short words.
+    private val shortStop = setOf("the", "and", "new", "san", "los", "las", "del", "des", "for", "fc", "of", "de", "la", "st")
+    private fun wordOk(w: String) = w.length >= 4 && w !in stop || (w.length == 3 && w !in shortStop && w !in stop)
+
+    private fun words(s: String) = normalize(s).split(' ').filter { wordOk(it) }
 
     private fun teamWords(t: Team): Set<String> = (words(t.location) + words(t.name) + words(t.shortName)).toSet()
 
     private fun teamMatches(paddedText: String, t: Team): Boolean {
-        val phrases = listOf(t.displayName, t.location, t.name, t.shortName).map { normalize(it) }.filter { it.length >= 4 }
+        val phrases = listOf(t.displayName, t.location, t.name, t.shortName).map { normalize(it) }.filter { it.length >= 3 && it !in shortStop }
         return phrases.any { paddedText.contains(" $it ") }
     }
 
@@ -42,7 +46,8 @@ object SportsMatcher {
         "espn" to "espn", "espn2" to "espn2", "espnu" to "espnu", "espnews" to "espnews", "espnplus" to "espnplus",
         "abc" to "abc", "cbs" to "cbs", "nbc" to "nbc", "fox" to "fox", "fs1" to "fs1", "fs2" to "fs2",
         "tnt" to "tnt", "tbs" to "tbs", "trutv" to "trutv", "nflnetwork" to "nflnetwork", "nfln" to "nflnetwork",
-        "accnetwork" to "acc", "accn" to "acc", "secnetwork" to "sec", "secn" to "sec", "bigtennetwork" to "btn", "btn" to "btn",
+        "accnetwork" to "acc", "accn" to "acc", "accdigitalnetwork" to "accdigital", "accnx" to "accdigital",
+        "espnsecnetwork" to "sec", "secnetworkplus" to "secplus", "secplus" to "secplus", "secnetwork" to "sec", "secn" to "sec", "bigtennetwork" to "btn", "btn" to "btn",
         "cbssportsnetwork" to "cbssn", "cbssn" to "cbssn", "usanetwork" to "usa", "peacock" to "peacock",
         "nbatv" to "nbatv", "mlbnetwork" to "mlbnetwork", "nhlnetwork" to "nhlnetwork", "golfchannel" to "golf",
     )
@@ -82,7 +87,7 @@ object SportsMatcher {
         val netChannels = HashMap<String, MutableList<Pair<Channel, Boolean>>>()
         for (ch in Repo.live) {
             val nameText = normalize(ch.name)
-            val nameWords = nameText.split(' ').filter { it.length >= 4 && it in teamWordSet }
+            val nameWords = nameText.split(' ').filter { it.length >= 3 && it in teamWordSet }
             if (nameWords.isNotEmpty()) {
                 val e = Entry(ch, null, nameText)
                 for (w in nameWords.toSet()) index.getOrPut(w) { ArrayList() }.add(e)
@@ -93,7 +98,7 @@ object SportsMatcher {
                     if (p.end <= now - 3600) continue
                     if (p.start > horizon + 4 * 3600) break
                     val text = normalize(p.title + " " + p.desc + " " + ch.name)
-                    val ws = text.split(' ').filter { it.length >= 4 && it in teamWordSet }
+                    val ws = text.split(' ').filter { it.length >= 3 && it in teamWordSet }
                     if (ws.isEmpty()) continue
                     val e = Entry(ch, p, text)
                     for (w in ws.toSet()) index.getOrPut(w) { ArrayList() }.add(e)
