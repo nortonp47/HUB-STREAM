@@ -75,6 +75,7 @@ object Repo {
     fun init(context: Context) {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
+        installCrashLog()
         val p = prefs()
         val json = p.getString("playlists", null)
         if (json != null) {
@@ -84,6 +85,18 @@ object Repo {
                 Playlist(o.getString("id"), o.getString("name"), o.getString("server"), o.getString("username"), o.getString("password"))
             }
             activeId = p.getString("active", playlists.firstOrNull()?.id ?: "") ?: ""
+            // The app died while loading this playlist last time: don't loop, go back to another one.
+            val dying = p.getString("loading_id", "") ?: ""
+            if (dying.isNotEmpty()) {
+                p.edit().remove("loading_id").apply()
+                if (dying == activeId) {
+                    val bad = playlists.firstOrNull { it.id == dying }
+                    val other = playlists.firstOrNull { it.id != dying }
+                    notice = "The app crashed while loading \"${bad?.name ?: "a playlist"}\" (probably too big for this device's memory)." +
+                        if (other != null) " Switched back to \"${other.name}\"." else ""
+                    if (other != null) activeId = other.id
+                }
+            }
             favorites += p.getStringSet("favorites2", emptySet()) ?: emptySet()
         } else {
             // From the single-login versions: turn the old login and favorites into the first playlist.
@@ -287,9 +300,29 @@ object Repo {
     }
 
     /** Downloads (or reads from cache) every catalog. Returns an error message or null on success. */
+    /** A message to show the user once (e.g. after a crash), cleared when dismissed. */
+    var notice by mutableStateOf("")
+
+    private fun installCrashLog() {
+        val old = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                java.io.File(appContext.filesDir, "last_crash.txt").writeText(
+                    "${java.util.Date()}  thread ${t.name}\n${sw.toString().take(6000)}")
+            }
+            old?.uncaughtException(t, e)
+        }
+    }
+
+    fun lastCrash(): String = runCatching { java.io.File(appContext.filesDir, "last_crash.txt").takeIf { it.exists() }?.readText() }.getOrNull().orEmpty()
+    fun clearCrash() { runCatching { java.io.File(appContext.filesDir, "last_crash.txt").delete() } }
+
     suspend fun refresh(force: Boolean): String? = withContext(Dispatchers.IO) {
         val api = api ?: return@withContext "No playlist"
         val forId = activeId
+        prefs().edit().putString("loading_id", forId).commit()
         try {
             if (serverZone == null) serverZone = runCatching {
                 JSONObject(api.raw(null)).optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }
@@ -309,9 +342,12 @@ object Repo {
             status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
             loaded = true
             null
-        } catch (e: Exception) {
-            status = "Couldn't load: ${e.message}"
-            e.message ?: "Unknown error"
+        } catch (e: Throwable) {
+            val msg = if (e is OutOfMemoryError) "Not enough memory for this playlist's catalog" else (e.message ?: "Unknown error")
+            status = "Couldn't load: $msg"
+            msg
+        } finally {
+            prefs().edit().remove("loading_id").commit()
         }
     }
 

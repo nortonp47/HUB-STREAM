@@ -68,7 +68,7 @@ object Epg {
                 try {
                     status = "Guide: downloading (the first time can take a minute)..."
                     download(f)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     if (f.exists() && readCache(f)) {
                         status = "Guide: couldn't refresh (${e.message}); using saved copy"
                     } else {

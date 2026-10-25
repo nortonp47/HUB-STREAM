@@ -227,6 +227,7 @@ fun HubApp() {
         }
     }
 
+    val content: @Composable () -> Unit = {
     if (isTv || screen == Screen.Setup || screen == Screen.Account) {
         body()
     } else {
@@ -255,6 +256,20 @@ fun HubApp() {
                 }
             }
         }
+    }
+    }
+    var crashText by remember { mutableStateOf(Repo.lastCrash()) }
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (Repo.notice.isNotEmpty() || crashText.isNotEmpty()) {
+            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF5A2A2A)).padding(10.dp)) {
+                if (Repo.notice.isNotEmpty()) Text(Repo.notice, fontSize = 14.sp, color = Color.White)
+                if (crashText.isNotEmpty()) Text("Last crash:\n" + crashText.take(700), fontSize = 10.sp, color = Color.White)
+                FocusButton("Dismiss", Modifier.width(140.dp).height(40.dp), textSize = 14.sp) {
+                    Repo.notice = ""; Repo.clearCrash(); crashText = ""
+                }
+            }
+        }
+        Box(modifier = Modifier.weight(1f)) { content() }
     }
 }
 
