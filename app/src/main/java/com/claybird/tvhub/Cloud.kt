@@ -185,6 +185,16 @@ object Cloud {
         call("POST", "/rest/v1/history?on_conflict=user_id,key", arr.toString(), token(), "resolution=merge-duplicates,return=minimal")
     }
 
+    fun pullCuration(): List<Pair<String, String>> {
+        val arr = JSONArray(call("GET", "/rest/v1/curation?select=playlist_id,data&limit=100", bearer = token()))
+        return (0 until arr.length()).map { arr.getJSONObject(it).let { o -> o.getString("playlist_id") to o.getString("data") } }
+    }
+
+    fun pushCuration(playlistId: String, data: String) {
+        val body = JSONObject().put("playlist_id", playlistId).put("data", data).put("updated_at", java.time.Instant.now().toString()).toString()
+        call("POST", "/rest/v1/curation?on_conflict=user_id,playlist_id", "[$body]", token(), "resolution=merge-duplicates,return=minimal")
+    }
+
     fun deleteFavorite(key: String) {
         call("DELETE", "/rest/v1/favorites?key=eq.${enc(key)}", bearer = token())
     }

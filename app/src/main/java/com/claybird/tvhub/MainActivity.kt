@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -112,6 +113,7 @@ sealed class Screen {
     object Guide : Screen()
     object Sports : Screen()
     object Search : Screen()
+    object Curate : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -186,6 +188,7 @@ fun HubApp() {
             Screen.Account -> AccountScreen(isTv, onDone = { screen = if (Repo.hasLogin) start else Screen.Setup })
             Screen.Settings -> SettingsScreen(isTv, onOpen = { screen = it })
             Screen.Diagnostics -> DiagnosticsScreen()
+            Screen.Curate -> CurateScreen(isTv)
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive, onCatchUp = catchUp)
             Screen.Search -> SearchScreen(
                 isTv = isTv, onLive = watchLive, onMovie = playMovie, onResume = resumeItem,
@@ -269,7 +272,7 @@ fun HubApp() {
                 }
             }
         }
-        Box(modifier = Modifier.weight(1f)) { content() }
+        Box(modifier = Modifier.weight(1f)) { key(Repo.curationVersion) { content() } }
     }
 }
 

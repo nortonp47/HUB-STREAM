@@ -58,6 +58,17 @@ object Repo {
     var showCategories: List<Category> = emptyList(); private set
     var shows: List<Show> = emptyList(); private set
 
+    // What the provider sent, before your hide/rename/order choices (see Curation).
+    var rawLiveCategories: List<Category> = emptyList(); private set
+    var rawLive: List<Channel> = emptyList(); private set
+    var rawMovieCategories: List<Category> = emptyList(); private set
+    var rawMovies: List<Movie> = emptyList(); private set
+    var rawShowCategories: List<Category> = emptyList(); private set
+    var rawShows: List<Show> = emptyList(); private set
+    /** Bumped when your hide/rename choices change, so screens rebuild from the new lists. */
+    var curationVersion by mutableStateOf(0)
+        private set
+
     var status by mutableStateOf("")
     var loaded by mutableStateOf(false)
 
@@ -165,6 +176,8 @@ object Repo {
         runCatching { java.net.URI(if (server.contains("://")) server else "http://$server").host }.getOrNull() ?: server
 
     private fun resetLists() {
+        rawLive = emptyList(); rawLiveCategories = emptyList(); rawMovies = emptyList(); rawMovieCategories = emptyList()
+        rawShows = emptyList(); rawShowCategories = emptyList()
         live = emptyList(); liveCategories = emptyList()
         movies = emptyList(); movieCategories = emptyList()
         shows = emptyList(); showCategories = emptyList()
@@ -201,6 +214,7 @@ object Repo {
         val victim = playlists.firstOrNull { it.id == id } ?: return
         playlists = playlists.filter { it.id != id }
         favorites.removeAll { it.startsWith("$id|") }
+        prefs().edit().remove("curation_$id").apply()
         appContext.filesDir.listFiles()?.filter { it.name.startsWith("cache_${id}_") || it.name == "epg_$id.bin.gz" }?.forEach { it.delete() }
         if (activeId == id) {
             activeId = playlists.firstOrNull()?.id ?: ""
@@ -261,10 +275,61 @@ object Repo {
                 persistHistory()
                 if (localNewer.isNotEmpty()) Cloud.pushHistory(localNewer.take(100))
             }
+            runCatching {
+                var changedActive = false
+                Cloud.pullCuration().forEach { (pid, text) ->
+                    val cloudD = CurationData.fromJson(text)
+                    val localD = curationText(pid)?.let { CurationData.fromJson(it) }
+                    if (localD == null || cloudD.updatedAt > localD.updatedAt) {
+                        prefs().edit().putString("curation_$pid", text).apply()
+                        if (pid == activeId) { Curation.load(pid); changedActive = true }
+                    } else if (localD.updatedAt > cloudD.updatedAt) Cloud.pushCuration(pid, localD.toJson())
+                }
+                if (changedActive && loaded) applyCuration()
+            }
             "Synced: ${merged.size} playlist(s), ${favorites.size} favorite(s)"
         } catch (e: Exception) {
             "Couldn't sync: ${e.message}"
         }
+    }
+
+    // ---- your hide / rename / order choices ----
+
+    fun curationText(playlistId: String): String? = prefs().getString("curation_$playlistId", null)
+
+    fun saveCuration(playlistId: String, d: CurationData) {
+        if (playlistId.isEmpty()) return
+        prefs().edit().putString("curation_$playlistId", d.toJson()).apply()
+    }
+
+    /** Builds the lists the screens use from the provider's lists plus your choices. */
+    fun applyCuration() {
+        val d = Curation.data
+        val catRules = Rules(d.catRules)
+        val nameRules = Rules(d.nameRules)
+        fun cats(k: String, raw: List<Category>): List<Category> {
+            val order = d.order[k].orEmpty()
+            return raw.filter { c -> "$k|${c.id}" !in d.hiddenCats && !catRules.matches(c.name) }
+                .sortedBy { c -> order.indexOf(c.id).let { if (it < 0) Int.MAX_VALUE else it } }
+                .map { c -> d.catNames["$k|${c.id}"]?.let { Category(c.id, it) } ?: c }
+        }
+        fun visible(k: String, raw: List<Category>): Set<String> = cats(k, raw).map { it.id }.toHashSet()
+        val lcs = cats("L", rawLiveCategories); val mcs = cats("M", rawMovieCategories); val scs = cats("S", rawShowCategories)
+        val lv = visible("L", rawLiveCategories); val mv = visible("M", rawMovieCategories); val sv = visible("S", rawShowCategories)
+        val known = { all: List<Category>, id: String -> all.any { it.id == id } }
+        live = rawLive.filter { (it.categoryId in lv || !known(rawLiveCategories, it.categoryId)) && "L|${it.id}" !in d.hiddenItems && !nameRules.matches(it.name) }
+        movies = rawMovies.filter { (it.categoryId in mv || !known(rawMovieCategories, it.categoryId)) && "M|${it.id}" !in d.hiddenItems && !nameRules.matches(it.name) }
+        shows = rawShows.filter { (it.categoryId in sv || !known(rawShowCategories, it.categoryId)) && "S|${it.id}" !in d.hiddenItems && !nameRules.matches(it.name) }
+        liveCategories = lcs; movieCategories = mcs; showCategories = scs
+        if (loaded) status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
+        curationVersion++
+    }
+
+    fun pushCurationBackground() {
+        val id = activeId
+        if (id.isEmpty() || !Cloud.signedIn) return
+        val text = curationText(id) ?: return
+        io.launch { runCatching { Cloud.pushCuration(id, text) } }
     }
 
     // ---- favorites (per playlist) ----
@@ -338,7 +403,9 @@ object Repo {
             val sc = XtreamApi.parseCategories(cached(forId, "series_cat", force) { api.raw("get_series_categories") })
             val sh = XtreamApi.parseShows(cached(forId, "series", force) { api.raw("get_series") })
             if (forId != activeId) return@withContext null // switched playlists meanwhile
-            liveCategories = lc; live = lv; movieCategories = mc; movies = mv; showCategories = sc; shows = sh
+            rawLiveCategories = lc; rawLive = lv; rawMovieCategories = mc; rawMovies = mv; rawShowCategories = sc; rawShows = sh
+            Curation.load(forId)
+            applyCuration()
             status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
             loaded = true
             null
