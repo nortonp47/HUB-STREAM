@@ -319,7 +319,7 @@ fun SportsScreen(isTv: Boolean, onWatch: (List<List<Channel>>, Int, Int) -> Unit
     var league by remember { mutableStateOf("all") }
     val epgVersion = Epg.version
 
-    LaunchedEffect(epgVersion, Repo.loaded, Repo.activeId) {
+    LaunchedEffect(epgVersion, Repo.loaded, Repo.enabledIds) {
         if (!Repo.loaded) { result = null; return@LaunchedEffect }
         while (true) {
             result = withContext(Dispatchers.Default) {

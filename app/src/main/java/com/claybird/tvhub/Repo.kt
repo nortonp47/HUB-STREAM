@@ -40,14 +40,34 @@ object Repo {
     var activeId by mutableStateOf("")
         private set
 
+    /** Playlists that are switched on. Several can be on at once; their channels, movies and shows are merged. */
+    var enabledIds by mutableStateOf<Set<String>>(emptySet())
+        private set
+    val enabled: List<Playlist> get() = playlists.filter { it.id in enabledIds }
+    fun isEnabled(id: String) = id in enabledIds
+
     val active: Playlist? get() = playlists.firstOrNull { it.id == activeId }
     val creds: Credentials? get() = active?.let { Credentials(it.server, it.username, it.password) }
     val api: XtreamApi? get() = creds?.let { c -> apiFor(c) }
-    private var apiCache: Pair<Credentials, XtreamApi>? = null
-    private fun apiFor(c: Credentials): XtreamApi {
-        apiCache?.let { if (it.first == c) return it.second }
-        return XtreamApi(c).also { apiCache = c to it }
-    }
+    private val apiCache = HashMap<Credentials, XtreamApi>()
+    private fun apiFor(c: Credentials): XtreamApi = apiCache.getOrPut(c) { XtreamApi(c) }
+
+    /**
+     * With several playlists on, every channel/movie/show id is slot * SLOT + the provider's own id, where slot is the
+     * playlist's position among the ones that are on. With one playlist on, ids are the provider's own.
+     */
+    const val SLOT = 100_000_000
+    fun playlistIdOf(id: Int): String = enabled.getOrNull(id / SLOT)?.id ?: activeId
+    fun realId(id: Int): Int = id % SLOT
+    fun apiForPlaylist(playlistId: String): XtreamApi? =
+        playlists.firstOrNull { it.id == playlistId }?.let { apiFor(Credentials(it.server, it.username, it.password)) }
+    fun apiOf(id: Int): XtreamApi? = apiForPlaylist(playlistIdOf(id))
+
+    fun movieUrl(id: Int, ext: String): String = apiOf(id)!!.movieUrl(realId(id), ext)
+    fun episodeUrl(showId: Int, episodeId: String, ext: String): String = apiOf(showId)!!.episodeUrl(episodeId, ext)
+    fun catchupUrl(channelId: Int, startSec: Long, durationMin: Int): String =
+        apiOf(channelId)!!.catchupUrl(realId(channelId), startSec, durationMin, zones[playlistIdOf(channelId)])
+    suspend fun seriesEpisodes(showId: Int): List<Episode> = apiOf(showId)!!.seriesEpisodes(realId(showId))
 
     val hasLogin: Boolean get() = active != null
 
@@ -74,8 +94,7 @@ object Repo {
 
     var history by mutableStateOf<List<HistoryItem>>(emptyList())
         private set
-    var serverZone: String? = null
-        private set
+    private val zones = HashMap<String, String>()
 
     private val favorites = HashSet<String>()
     var favoritesVersion by mutableStateOf(0)
@@ -96,16 +115,21 @@ object Repo {
                 Playlist(o.getString("id"), o.getString("name"), o.getString("server"), o.getString("username"), o.getString("password"))
             }
             activeId = p.getString("active", playlists.firstOrNull()?.id ?: "") ?: ""
+            enabledIds = (p.getStringSet("enabled", null) ?: setOf(activeId)).filter { id -> playlists.any { it.id == id } }.toSet()
+            if (enabledIds.isEmpty() && activeId.isNotEmpty()) enabledIds = setOf(activeId)
             // The app died while loading this playlist last time: don't loop, go back to another one.
             val dying = p.getString("loading_id", "") ?: ""
             if (dying.isNotEmpty()) {
                 p.edit().remove("loading_id").apply()
-                if (dying == activeId) {
+                if (dying in enabledIds) {
                     val bad = playlists.firstOrNull { it.id == dying }
-                    val other = playlists.firstOrNull { it.id != dying }
+                    val other = enabled.firstOrNull { it.id != dying } ?: playlists.firstOrNull { it.id != dying }
                     notice = "The app crashed while loading \"${bad?.name ?: "a playlist"}\" (probably too big for this device's memory)." +
-                        if (other != null) " Switched back to \"${other.name}\"." else ""
-                    if (other != null) activeId = other.id
+                        if (other != null) " Turned it off." else ""
+                    if (other != null) {
+                        enabledIds = (enabledIds - dying).ifEmpty { setOf(other.id) }
+                        if (activeId == dying) activeId = enabledIds.first()
+                    }
                 }
             }
             favorites += p.getStringSet("favorites2", emptySet()) ?: emptySet()
@@ -118,12 +142,14 @@ object Repo {
                 val pl = Playlist(UUID.randomUUID().toString(), hostOf(server), server, user, pass)
                 playlists = listOf(pl)
                 activeId = pl.id
+                enabledIds = setOf(pl.id)
                 (p.getStringSet("favorites", emptySet()) ?: emptySet()).forEach { favorites += "${pl.id}|$it" }
                 appContext.filesDir.listFiles()?.filter { it.name.startsWith("cache_") }?.forEach { it.delete() }
                 persist()
             }
         }
         if (active == null && playlists.isNotEmpty()) activeId = playlists.first().id
+        if (enabledIds.isEmpty() && activeId.isNotEmpty()) enabledIds = setOf(activeId)
         prefs().getString("history", null)?.let { j ->
             runCatching {
                 val arr = JSONArray(j)
@@ -147,17 +173,20 @@ object Repo {
     }
 
     /** Remember that you watched something (and how far). [push] also sends it to your account. */
-    fun recordPlay(kind: String, itemId: String, title: String, icon: String, ext: String, positionMs: Long, durationMs: Long, push: Boolean) {
-        if (activeId.isEmpty()) return
-        val key = "$activeId|$kind:$itemId"
-        val item = HistoryItem(key, activeId, kind, itemId, title, icon, ext, positionMs, durationMs, System.currentTimeMillis())
+    fun recordPlay(
+        kind: String, itemId: String, title: String, icon: String, ext: String, positionMs: Long, durationMs: Long, push: Boolean,
+        playlistId: String = activeId,
+    ) {
+        if (playlistId.isEmpty()) return
+        val key = "$playlistId|$kind:$itemId"
+        val item = HistoryItem(key, playlistId, kind, itemId, title, icon, ext, positionMs, durationMs, System.currentTimeMillis())
         history = (listOf(item) + history.filter { it.key != key }).take(200)
         persistHistory()
         if (push && Cloud.signedIn) io.launch { runCatching { Cloud.pushHistory(listOf(item)) } }
     }
 
     fun historyFor(vararg kinds: String): List<HistoryItem> =
-        history.filter { it.playlistId == activeId && it.kind in kinds }
+        history.filter { it.playlistId in enabledIds && it.kind in kinds }
 
     private fun persist() {
         val arr = JSONArray()
@@ -168,6 +197,7 @@ object Repo {
         prefs().edit()
             .putString("playlists", arr.toString())
             .putString("active", activeId)
+            .putStringSet("enabled", HashSet(enabledIds))
             .putStringSet("favorites2", HashSet(favorites))
             .apply()
     }
@@ -181,9 +211,9 @@ object Repo {
         live = emptyList(); liveCategories = emptyList()
         movies = emptyList(); movieCategories = emptyList()
         shows = emptyList(); showCategories = emptyList()
+        raws.clear()
         loaded = false
         status = ""
-        serverZone = null
         Epg.clear(deleteFile = false)
     }
 
@@ -197,15 +227,29 @@ object Repo {
         }
         val pl = Playlist(UUID.randomUUID().toString(), finalName, c.server.trim(), c.username.trim(), c.password.trim())
         playlists = playlists + pl
-        activeId = pl.id
+        if (activeId.isEmpty()) activeId = pl.id
+        enabledIds = enabledIds + pl.id // switched on alongside the others
         persist()
         resetLists()
         pushPlaylistsInBackground()
     }
 
+    /** Use only this playlist. */
     fun selectPlaylist(id: String) {
-        if (id == activeId || playlists.none { it.id == id }) return
+        if (playlists.none { it.id == id } || (enabledIds == setOf(id) && activeId == id)) return
         activeId = id
+        enabledIds = setOf(id)
+        persist()
+        resetLists()
+    }
+
+    /** Switch a playlist on or off. At least one stays on. */
+    fun setEnabled(id: String, on: Boolean) {
+        if (playlists.none { it.id == id }) return
+        val n = if (on) enabledIds + id else enabledIds - id
+        if (n.isEmpty() || n == enabledIds) return
+        enabledIds = n
+        if (activeId !in n) activeId = enabled.first().id
         persist()
         resetLists()
     }
@@ -216,10 +260,11 @@ object Repo {
         favorites.removeAll { it.startsWith("$id|") }
         prefs().edit().remove("curation_$id").apply()
         appContext.filesDir.listFiles()?.filter { it.name.startsWith("cache_${id}_") || it.name == "epg_$id.bin.gz" }?.forEach { it.delete() }
-        if (activeId == id) {
-            activeId = playlists.firstOrNull()?.id ?: ""
-            resetLists()
-        }
+        val wasOn = id in enabledIds
+        enabledIds = enabledIds - id
+        if (enabledIds.isEmpty()) enabledIds = playlists.firstOrNull()?.let { setOf(it.id) } ?: emptySet()
+        if (activeId == id || activeId !in enabledIds) activeId = enabledIds.firstOrNull() ?: ""
+        if (wasOn) resetLists()
         persist()
         favoritesVersion++
         if (Cloud.signedIn) io.launch {
@@ -244,6 +289,7 @@ object Repo {
             val localOnly = playlists.filter { "${it.server.lowercase()}|${it.username}" !in cloudKeys }
             val merged = cloud + (if (firstTime) localOnly else emptyList())
             val before = activeId
+            val oldEnabled = enabledIds
             val oldActive = active
             // If this device's active playlist is the same service as a cloud one, keep it active.
             val newActive = merged.firstOrNull { it.id == before }
@@ -251,7 +297,10 @@ object Repo {
                 ?: merged.firstOrNull()
             playlists = merged
             activeId = newActive?.id ?: ""
-            if (activeId != before) resetLists()
+            val keepOn = oldEnabled.filter { id -> merged.any { it.id == id } }.toSet()
+            enabledIds = keepOn.ifEmpty { if (activeId.isEmpty()) emptySet() else setOf(activeId) }
+            if (activeId !in enabledIds) activeId = enabledIds.firstOrNull() ?: ""
+            if (activeId != before || enabledIds != oldEnabled) resetLists()
 
             val cloudFavs = Cloud.pullFavorites()
             val localFavs = HashSet(favorites)
@@ -282,7 +331,7 @@ object Repo {
                     val localD = curationText(pid)?.let { CurationData.fromJson(it) }
                     if (localD == null || cloudD.updatedAt > localD.updatedAt) {
                         prefs().edit().putString("curation_$pid", text).apply()
-                        if (pid == activeId) { Curation.load(pid); changedActive = true }
+                        if (pid in enabledIds) { Curation.load(pid); changedActive = true }
                     } else if (localD.updatedAt > cloudD.updatedAt) Cloud.pushCuration(pid, localD.toJson())
                 }
                 if (changedActive && loaded) applyCuration()
@@ -302,38 +351,62 @@ object Repo {
         prefs().edit().putString("curation_$playlistId", d.toJson()).apply()
     }
 
-    /** Builds the lists the screens use from the provider's lists plus your choices. */
+    /** What one playlist sent, with the provider's own ids. */
+    class Raw(
+        val lc: List<Category>, val lv: List<Channel>, val mc: List<Category>, val mv: List<Movie>,
+        val sc: List<Category>, val sh: List<Show>,
+    )
+    private val raws = LinkedHashMap<String, Raw>()
+    fun rawFor(playlistId: String): Raw? = raws[playlistId]
+
+    /** Builds the lists the screens use from each playlist's lists plus your choices for it, merged. */
     fun applyCuration() {
-        val d = Curation.data
-        val catRules = Rules(d.catRules)
-        val nameRules = Rules(d.nameRules)
-        fun cats(k: String, raw: List<Category>): List<Category> {
-            val order = d.order[k].orEmpty()
-            return raw.filter { c -> "$k|${c.id}" !in d.hiddenCats && !catRules.matches(c.name) }
-                .sortedBy { c -> order.indexOf(c.id).let { if (it < 0) Int.MAX_VALUE else it } }
-                .map { c -> d.catNames["$k|${c.id}"]?.let { Category(c.id, it) } ?: c }
+        val multi = enabled.size > 1
+        val lcs = ArrayList<Category>(); val mcs = ArrayList<Category>(); val scs = ArrayList<Category>()
+        val lvs = ArrayList<Channel>(); val mvs = ArrayList<Movie>(); val shs = ArrayList<Show>()
+        enabled.forEachIndexed { slot, pl ->
+            val raw = raws[pl.id] ?: return@forEachIndexed
+            val d = curationText(pl.id)?.let { CurationData.fromJson(it) } ?: CurationData()
+            val catRules = Rules(d.catRules)
+            val nameRules = Rules(d.nameRules)
+            fun ns(c: String) = if (multi) "$slot~$c" else c
+            fun tag(id: Int) = slot * SLOT + id
+            fun label(n: String) = if (multi) "[${pl.name}] $n" else n
+            fun cats(k: String, rawCats: List<Category>): List<Category> {
+                val order = d.order[k].orEmpty()
+                return rawCats.filter { c -> "$k|${c.id}" !in d.hiddenCats && !catRules.matches(c.name) }
+                    .sortedBy { c -> order.indexOf(c.id).let { if (it < 0) Int.MAX_VALUE else it } }
+            }
+            val lc = cats("L", raw.lc); val mc = cats("M", raw.mc); val sc = cats("S", raw.sc)
+            val lv = lc.map { it.id }.toHashSet(); val mv = mc.map { it.id }.toHashSet(); val sv = sc.map { it.id }.toHashSet()
+            val kl = raw.lc.map { it.id }.toHashSet(); val km = raw.mc.map { it.id }.toHashSet(); val ks = raw.sc.map { it.id }.toHashSet()
+            fun named(k: String, c: Category) = label(d.catNames["$k|${c.id}"] ?: c.name)
+            lc.forEach { lcs += Category(ns(it.id), named("L", it)) }
+            mc.forEach { mcs += Category(ns(it.id), named("M", it)) }
+            sc.forEach { scs += Category(ns(it.id), named("S", it)) }
+            for (c in raw.lv) if ((c.categoryId in lv || c.categoryId !in kl) && "L|${c.id}" !in d.hiddenItems && !nameRules.matches(c.name))
+                lvs += c.copy(id = tag(c.id), categoryId = ns(c.categoryId))
+            for (m in raw.mv) if ((m.categoryId in mv || m.categoryId !in km) && "M|${m.id}" !in d.hiddenItems && !nameRules.matches(m.name))
+                mvs += m.copy(id = tag(m.id), categoryId = ns(m.categoryId))
+            for (sh in raw.sh) if ((sh.categoryId in sv || sh.categoryId !in ks) && "S|${sh.id}" !in d.hiddenItems && !nameRules.matches(sh.name))
+                shs += sh.copy(id = tag(sh.id), categoryId = ns(sh.categoryId))
         }
-        fun visible(k: String, raw: List<Category>): Set<String> = cats(k, raw).map { it.id }.toHashSet()
-        val lcs = cats("L", rawLiveCategories); val mcs = cats("M", rawMovieCategories); val scs = cats("S", rawShowCategories)
-        val lv = visible("L", rawLiveCategories); val mv = visible("M", rawMovieCategories); val sv = visible("S", rawShowCategories)
-        val known = { all: List<Category>, id: String -> all.any { it.id == id } }
-        live = rawLive.filter { (it.categoryId in lv || !known(rawLiveCategories, it.categoryId)) && "L|${it.id}" !in d.hiddenItems && !nameRules.matches(it.name) }
-        movies = rawMovies.filter { (it.categoryId in mv || !known(rawMovieCategories, it.categoryId)) && "M|${it.id}" !in d.hiddenItems && !nameRules.matches(it.name) }
-        shows = rawShows.filter { (it.categoryId in sv || !known(rawShowCategories, it.categoryId)) && "S|${it.id}" !in d.hiddenItems && !nameRules.matches(it.name) }
+        live = lvs; movies = mvs; shows = shs
         liveCategories = lcs; movieCategories = mcs; showCategories = scs
         if (loaded) status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
         curationVersion++
     }
 
     fun pushCurationBackground() {
-        val id = activeId
-        if (id.isEmpty() || !Cloud.signedIn) return
-        val text = curationText(id) ?: return
-        io.launch { runCatching { Cloud.pushCuration(id, text) } }
+        if (!Cloud.signedIn) return
+        for (id in enabledIds) {
+            val text = curationText(id) ?: continue
+            io.launch { runCatching { Cloud.pushCuration(id, text) } }
+        }
     }
 
     // ---- favorites (per playlist) ----
-    private fun favKey(kind: Kind, id: Int) = "$activeId|${kind.name}:$id"
+    private fun favKey(kind: Kind, id: Int) = "${playlistIdOf(id)}|${kind.name}:${realId(id)}"
 
     fun isFavorite(kind: Kind, id: Int) = favorites.contains(favKey(kind, id))
 
@@ -387,37 +460,49 @@ object Repo {
     fun clearCrash() { runCatching { java.io.File(appContext.filesDir, "last_crash.txt").delete() } }
 
     suspend fun refresh(force: Boolean): String? = withContext(Dispatchers.IO) {
-        val api = api ?: return@withContext "No playlist"
-        val forId = activeId
-        prefs().edit().putString("loading_id", forId).commit()
-        try {
-            if (serverZone == null) serverZone = runCatching {
-                JSONObject(api.raw(null)).optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }
-            }.getOrNull()
-            status = "Loading live categories..."
-            val lc = XtreamApi.parseCategories(cached(forId, "live_cat", force) { api.download("get_live_categories", it) })
-            status = "Loading live channels..."
-            val lv = XtreamApi.parseChannels(cached(forId, "live", force) { api.download("get_live_streams", it) })
-            status = "Loading movies..."
-            val mc = XtreamApi.parseCategories(cached(forId, "vod_cat", force) { api.download("get_vod_categories", it) })
-            val mv = XtreamApi.parseMovies(cached(forId, "vod", force) { api.download("get_vod_streams", it) })
-            status = "Loading shows..."
-            val sc = XtreamApi.parseCategories(cached(forId, "series_cat", force) { api.download("get_series_categories", it) })
-            val sh = XtreamApi.parseShows(cached(forId, "series", force) { api.download("get_series", it) })
-            if (forId != activeId) return@withContext null // switched playlists meanwhile
-            rawLiveCategories = lc; rawLive = lv; rawMovieCategories = mc; rawMovies = mv; rawShowCategories = sc; rawShows = sh
-            Curation.load(forId)
-            applyCuration()
-            status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
-            loaded = true
-            null
-        } catch (e: Throwable) {
-            val msg = if (e is OutOfMemoryError) "Not enough memory for this playlist's catalog" else (e.message ?: "Unknown error")
-            status = "Couldn't load: $msg"
-            msg
-        } finally {
-            prefs().edit().remove("loading_id").commit()
+        val list = enabled
+        if (list.isEmpty()) return@withContext "No playlist"
+        val keyNow = list.map { it.id }
+        val got = LinkedHashMap<String, Raw>()
+        var firstError: String? = null
+        for (pl in list) {
+            val forId = pl.id
+            val api = apiForPlaylist(forId) ?: continue
+            prefs().edit().putString("loading_id", forId).commit()
+            val tag = if (list.size > 1) "${pl.name}: " else ""
+            try {
+                if (zones[forId] == null) runCatching {
+                    JSONObject(api.raw(null)).optJSONObject("server_info")?.optString("timezone")?.takeIf { it.isNotBlank() }
+                }.getOrNull()?.let { zones[forId] = it }
+                status = "${tag}Loading live categories..."
+                val lc = XtreamApi.parseCategories(cached(forId, "live_cat", force) { api.download("get_live_categories", it) })
+                status = "${tag}Loading live channels..."
+                val lv = XtreamApi.parseChannels(cached(forId, "live", force) { api.download("get_live_streams", it) })
+                status = "${tag}Loading movies..."
+                val mc = XtreamApi.parseCategories(cached(forId, "vod_cat", force) { api.download("get_vod_categories", it) })
+                val mv = XtreamApi.parseMovies(cached(forId, "vod", force) { api.download("get_vod_streams", it) })
+                status = "${tag}Loading shows..."
+                val sc = XtreamApi.parseCategories(cached(forId, "series_cat", force) { api.download("get_series_categories", it) })
+                val sh = XtreamApi.parseShows(cached(forId, "series", force) { api.download("get_series", it) })
+                got[forId] = Raw(lc, lv, mc, mv, sc, sh)
+            } catch (e: Throwable) {
+                val msg = if (e is OutOfMemoryError) "not enough memory for this playlist's catalog" else (e.message ?: "unknown error")
+                if (firstError == null) firstError = "${pl.name}: $msg"
+            } finally {
+                prefs().edit().remove("loading_id").commit()
+            }
         }
+        if (keyNow != enabled.map { it.id }) return@withContext null // switched playlists meanwhile
+        if (got.isEmpty()) {
+            status = "Couldn't load: $firstError"
+            return@withContext firstError
+        }
+        raws.clear(); raws.putAll(got)
+        loaded = true
+        applyCuration()
+        status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
+        if (firstError != null) notice = "Couldn't load $firstError"
+        firstError
     }
 
     // ---- guide snippets, fetched on demand and kept for a few minutes ----
@@ -425,9 +510,9 @@ object Repo {
 
     suspend fun epg(streamId: Int): List<EpgEntry> {
         val now = System.currentTimeMillis()
-        val key = "$activeId:$streamId"
+        val key = "$streamId"
         epgCache[key]?.let { if (now - it.first < 5 * 60_000L) return it.second }
-        val list = withContext(Dispatchers.IO) { runCatching { api?.shortEpg(streamId) }.getOrNull() ?: emptyList() }
+        val list = withContext(Dispatchers.IO) { runCatching { apiOf(streamId)?.shortEpg(realId(streamId)) }.getOrNull() ?: emptyList() }
         epgCache[key] = now to list
         return list
     }
@@ -443,7 +528,8 @@ object Repo {
     val fallback = java.util.ArrayDeque<Channel>()
 
     fun playItemFor(c: Channel): PlayItem {
-        val a = api!!
-        return PlayItem(c.name, a.liveUrl(c.id), a.liveTsUrl(c.id), true, c.id)
+        val a = apiOf(c.id)!!
+        val r = realId(c.id)
+        return PlayItem(c.name, a.liveUrl(r), a.liveTsUrl(r), true, c.id)
     }
 }

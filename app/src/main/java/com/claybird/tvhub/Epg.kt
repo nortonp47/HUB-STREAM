@@ -27,6 +27,16 @@ object Epg {
     private const val MAX_AGE_MS = 6L * 60 * 60 * 1000
 
     private var data: Map<String, Array<Prog>> = emptyMap()
+    /** Each playlist's guide, by playlist id. [data] merges them, keyed by "slot|epgId". */
+    private val parts = HashMap<String, Map<String, Array<Prog>>>()
+
+    private fun rebuild() {
+        val m = HashMap<String, Array<Prog>>()
+        Repo.enabled.forEachIndexed { slot, pl -> parts[pl.id]?.forEach { (k, v) -> m["$slot|$k"] = v } }
+        data = m
+        ready = m.isNotEmpty()
+        version++
+    }
 
     /** Shown on screen. */
     var status by mutableStateOf("")
@@ -35,55 +45,58 @@ object Epg {
         private set
     var ready by mutableStateOf(false)
         private set
-    private var loadingFor: String? = null
+    private var loading = false
 
     fun init(context: Context) {
         if (!::appContext.isInitialized) appContext = context.applicationContext
     }
 
     fun forChannel(c: Channel): Array<Prog>? =
-        if (c.epgId.isBlank()) null else data[c.epgId.lowercase()]
+        if (c.epgId.isBlank()) null else data["${c.id / Repo.SLOT}|${c.epgId.lowercase()}"]
 
     fun current(c: Channel, now: Long): Prog? =
         forChannel(c)?.firstOrNull { it.start <= now && it.end > now }
 
-    private fun cacheFile(id: String = Repo.activeId) = File(appContext.filesDir, "epg_$id.bin.gz")
+    private fun cacheFile(id: String) = File(appContext.filesDir, "epg_$id.bin.gz")
 
     fun clear(deleteFile: Boolean = true) {
+        if (deleteFile) Repo.playlists.forEach { cacheFile(it.id).delete() }
+        parts.clear()
         data = emptyMap()
         ready = false
         status = ""
-        if (deleteFile) cacheFile().delete()
         version++
     }
 
     suspend fun load(force: Boolean) {
-        val api = Repo.api ?: return
         if (!Repo.loaded) return
-        val id = Repo.activeId
-        // One load per playlist; a load for another playlist must not block this one.
-        if (loadingFor == id) return
-        loadingFor = id
-        val channels = Repo.live
+        // One load at a time; a switch of playlists clears everything and starts again.
+        if (loading) return
+        loading = true
         try {
-            withContext(Dispatchers.IO) {
-                val f = cacheFile(id)
-                val fresh = f.exists() && System.currentTimeMillis() - f.lastModified() < MAX_AGE_MS
-                if (!force && fresh && readCache(f, id)) return@withContext
-                try {
-                    if (Repo.activeId == id) status = "Guide: downloading (the first time can take a minute)..."
-                    download(f, id, api, channels)
-                } catch (e: Throwable) {
-                    val msg = if (e is OutOfMemoryError) "not enough memory" else e.message
-                    if (f.exists() && readCache(f, id)) {
-                        if (Repo.activeId == id) status = "Guide: couldn't refresh ($msg); using saved copy"
-                    } else if (Repo.activeId == id) {
-                        status = "Guide: couldn't load ($msg)"
+            for (pl in Repo.enabled) {
+                val channels = Repo.rawFor(pl.id)?.lv ?: continue
+                val api = Repo.apiForPlaylist(pl.id) ?: continue
+                val id = pl.id
+                withContext(Dispatchers.IO) {
+                    val f = cacheFile(id)
+                    val fresh = f.exists() && System.currentTimeMillis() - f.lastModified() < MAX_AGE_MS
+                    if (!force && fresh && readCache(f, id)) return@withContext
+                    try {
+                        if (Repo.isEnabled(id)) status = "Guide: downloading ${pl.name} (the first time can take a minute)..."
+                        download(f, id, api, channels)
+                    } catch (e: Throwable) {
+                        val msg = if (e is OutOfMemoryError) "not enough memory" else e.message
+                        if (f.exists() && readCache(f, id)) {
+                            if (Repo.isEnabled(id)) status = "Guide: couldn't refresh (${pl.name}: $msg); using saved copy"
+                        } else if (Repo.isEnabled(id)) {
+                            status = "Guide: couldn't load (${pl.name}: $msg)"
+                        }
                     }
                 }
             }
         } finally {
-            if (loadingFor == id) loadingFor = null
+            loading = false
         }
     }
 
@@ -127,7 +140,7 @@ object Epg {
                     result.getOrPut(chan) { ArrayList() }.add(Prog(start, stop, title, desc))
                     keep = false
                     count++
-                    if (count % 20000 == 0 && Repo.activeId == id) status = "Guide: reading... $count shows"
+                    if (count % 20000 == 0 && Repo.isEnabled(id)) status = "Guide: reading... $count shows"
                 }
                 event = parser.next()
             }
@@ -138,12 +151,11 @@ object Epg {
         for ((k, v) in result) built[k] = v.sortedBy { it.start }.toTypedArray()
         writeCache(cache, built)
         // The playlist may have been switched while this downloaded: keep the file, don't show it.
-        if (Repo.activeId != id) return
-        data = built
-        ready = built.isNotEmpty()
-        version++
-        status = if (built.isEmpty()) "Guide: the provider sent no guide data for your channels"
-        else "Guide ready: ${built.size} channels"
+        if (!Repo.isEnabled(id)) return
+        parts[id] = built
+        rebuild()
+        status = if (data.isEmpty()) "Guide: the provider sent no guide data for your channels"
+        else "Guide ready: ${data.size} channels"
     }
 
     private fun writeCache(f: File, map: Map<String, Array<Prog>>) {
@@ -172,11 +184,10 @@ object Epg {
                 map[k] = Array(m) { Prog(inp.readLong(), inp.readLong(), inp.readUTF(), inp.readUTF()) }
             }
         }
-        if (Repo.activeId == id) {
-            data = map
-            ready = map.isNotEmpty()
-            version++
-            status = "Guide ready: ${map.size} channels"
+        if (Repo.isEnabled(id)) {
+            parts[id] = map
+            rebuild()
+            status = "Guide ready: ${data.size} channels"
         }
         map.isNotEmpty()
     } catch (e: Throwable) {

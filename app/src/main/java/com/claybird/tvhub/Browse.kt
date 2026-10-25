@@ -271,7 +271,7 @@ fun EpisodesScreen(show: Show, onPlayEpisode: (Show, Episode) -> Unit) {
     var error by remember(show.id) { mutableStateOf("") }
     LaunchedEffect(show.id) {
         runCatching {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Repo.api!!.seriesEpisodes(show.id) }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Repo.seriesEpisodes(show.id) }
         }.onSuccess { episodes = it }.onFailure { error = it.message ?: "Couldn't load episodes"; episodes = emptyList() }
     }
     val first = remember { FocusRequester() }

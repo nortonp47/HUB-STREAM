@@ -268,16 +268,19 @@ fun SettingsScreen(isTv: Boolean, onOpen: (Screen) -> Unit) {
         Spacer(Modifier.height(22.dp))
         Text("Playlists", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Repo.playlists.forEach { pl ->
-            val isActive = pl.id == Repo.activeId
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(pl.name + if (isActive) "   (in use)" else "", fontSize = 18.sp, fontWeight = FontWeight.Medium,
-                        color = if (isActive) HubGreen else Color.White)
-                    Text("${pl.username} @ ${pl.server}", fontSize = 13.sp, color = HubMuted, maxLines = 1)
+            val isOn = Repo.isEnabled(pl.id)
+            Spacer(Modifier.height(8.dp))
+            Column {
+                Text(pl.name + if (isOn) "   (on)" else "   (off)", fontSize = 18.sp, fontWeight = FontWeight.Medium,
+                    color = if (isOn) HubGreen else HubMuted)
+                Text("${pl.username} @ ${pl.server}", fontSize = 13.sp, color = HubMuted, maxLines = 1)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    FocusButton(if (isOn) "Turn off" else "Turn on", Modifier.width(120.dp).height(44.dp), textSize = 16.sp) {
+                        Repo.setEnabled(pl.id, !isOn)
+                    }
+                    FocusButton("Only this", Modifier.width(120.dp).height(44.dp), textSize = 16.sp) { Repo.selectPlaylist(pl.id) }
+                    FocusButton("Remove", Modifier.width(110.dp).height(44.dp), textSize = 16.sp) { Repo.removePlaylist(pl.id) }
                 }
-                if (!isActive) FocusButton("Use", Modifier.width(90.dp).height(46.dp)) { Repo.selectPlaylist(pl.id) }
-                FocusButton("Remove", Modifier.width(110.dp).height(46.dp)) { Repo.removePlaylist(pl.id) }
             }
         }
         Spacer(Modifier.height(8.dp))

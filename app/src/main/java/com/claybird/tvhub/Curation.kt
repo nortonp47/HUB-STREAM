@@ -115,6 +115,8 @@ private fun kindKey(k: Kind) = when (k) { Kind.Live -> "L"; Kind.Movies -> "M"; 
 @Composable
 fun CurateScreen(isTv: Boolean) {
     var kind by remember { mutableStateOf(Kind.Live) }
+    var curateId by remember { mutableStateOf(Repo.activeId) }
+    androidx.compose.runtime.LaunchedEffect(curateId) { Curation.load(curateId) }
     var editing by remember { mutableStateOf<String?>(null) }
     var draft by remember { mutableStateOf("") }
     var ruleText by remember { mutableStateOf("") }
@@ -123,16 +125,17 @@ fun CurateScreen(isTv: Boolean) {
 
     DisposableEffect(Unit) { onDispose { Repo.applyCuration(); Repo.pushCurationBackground() } }
 
-    val rawCats = when (kind) { Kind.Live -> Repo.rawLiveCategories; Kind.Movies -> Repo.rawMovieCategories; Kind.Series -> Repo.rawShowCategories }
-    val counts: Map<String, Int> = remember(kind, Repo.loaded) {
+    val raw = Repo.rawFor(curateId)
+    val rawCats = when (kind) { Kind.Live -> raw?.lc; Kind.Movies -> raw?.mc; Kind.Series -> raw?.sc } ?: emptyList()
+    val counts: Map<String, Int> = remember(kind, curateId, Repo.loaded) {
         when (kind) {
-            Kind.Live -> Repo.rawLive.groupingBy { it.categoryId }.eachCount()
-            Kind.Movies -> Repo.rawMovies.groupingBy { it.categoryId }.eachCount()
-            Kind.Series -> Repo.rawShows.groupingBy { it.categoryId }.eachCount()
-        }
+            Kind.Live -> raw?.lv?.groupingBy { it.categoryId }?.eachCount()
+            Kind.Movies -> raw?.mv?.groupingBy { it.categoryId }?.eachCount()
+            Kind.Series -> raw?.sh?.groupingBy { it.categoryId }?.eachCount()
+        } ?: emptyMap()
     }
     val catRules = Rules(d.catRules)
-    val ordered = remember(kind, d.order, rawCats) {
+    val ordered = remember(kind, curateId, d.order, rawCats) {
         val o = d.order[k].orEmpty()
         rawCats.sortedBy { c -> o.indexOf(c.id).let { if (it < 0) Int.MAX_VALUE else it } }
     }
@@ -142,6 +145,7 @@ fun CurateScreen(isTv: Boolean) {
             modifier = Modifier.padding(start = 16.dp, top = 8.dp))
         Text("Hidden things disappear from the guide, browse lists, search and sports. Syncs to your other devices.",
             fontSize = 12.sp, color = HubMuted, modifier = Modifier.padding(horizontal = 16.dp))
+        if (Repo.enabled.size > 1) ChipRow(Repo.enabled.map { it.id to it.name }, curateId) { curateId = it; editing = null }
         ChipRow(listOf("L" to "Live TV", "M" to "Movies", "S" to "Shows"), k) {
             kind = when (it) { "M" -> Kind.Movies; "S" -> Kind.Series; else -> Kind.Live }; editing = null
         }

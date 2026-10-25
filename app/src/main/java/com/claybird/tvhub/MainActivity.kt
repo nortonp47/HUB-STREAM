@@ -129,11 +129,11 @@ fun HubApp() {
     var screen by remember { mutableStateOf<Screen>(if (Repo.hasLogin) start else Screen.Setup) }
 
     // Download (or read from cache) the channel lists whenever there is a login and nothing loaded yet.
-    LaunchedEffect(Repo.activeId, Repo.loaded) {
+    LaunchedEffect(Repo.enabledIds, Repo.loaded) {
         if (Repo.hasLogin && !Repo.loaded) Repo.refresh(force = false)
     }
     // Then the program guide, in the background.
-    LaunchedEffect(Repo.activeId, Repo.loaded) {
+    LaunchedEffect(Repo.enabledIds, Repo.loaded) {
         if (Repo.loaded) Epg.load(force = false)
     }
     // Signed in: pull playlists and favorites from the account when the app opens.
@@ -161,21 +161,25 @@ fun HubApp() {
         PlayerActivity.live(context)
     }
     val playMovie: (Movie, Long) -> Unit = { m, resume ->
-        PlayerActivity.vod(context, m.name, Repo.api!!.movieUrl(m.id, m.ext), "Movie", m.id.toString(), m.icon, m.ext, resume)
+        PlayerActivity.vod(context, m.name, Repo.movieUrl(m.id, m.ext), "Movie", Repo.realId(m.id).toString(), m.icon, m.ext, resume, Repo.playlistIdOf(m.id))
     }
     val resumeItem: (HistoryItem) -> Unit = { h ->
         when (h.kind) {
             "Live" -> {
-                val i = Repo.live.indexOfFirst { it.id.toString() == h.itemId }
+                val i = Repo.live.indexOfFirst { Repo.playlistIdOf(it.id) == h.playlistId && Repo.realId(it.id).toString() == h.itemId }
                 if (i >= 0) watchLive(Repo.live, i)
             }
-            "Movie" -> PlayerActivity.vod(context, h.title, Repo.api!!.movieUrl(h.itemId.toInt(), h.ext), "Movie", h.itemId, h.icon, h.ext, h.positionMs)
-            "Episode" -> PlayerActivity.vod(context, h.title, Repo.api!!.episodeUrl(h.itemId, h.ext), "Episode", h.itemId, h.icon, h.ext, h.positionMs)
+            "Movie" -> Repo.apiForPlaylist(h.playlistId)?.let { a ->
+                PlayerActivity.vod(context, h.title, a.movieUrl(h.itemId.toInt(), h.ext), "Movie", h.itemId, h.icon, h.ext, h.positionMs, h.playlistId)
+            }
+            "Episode" -> Repo.apiForPlaylist(h.playlistId)?.let { a ->
+                PlayerActivity.vod(context, h.title, a.episodeUrl(h.itemId, h.ext), "Episode", h.itemId, h.icon, h.ext, h.positionMs, h.playlistId)
+            }
         }
     }
     val catchUp: (Channel, Prog) -> Unit = { ch, p ->
         val mins = ((p.end - p.start) / 60).toInt().coerceAtLeast(1)
-        PlayerActivity.vod(context, "${ch.name}: ${p.title}", Repo.api!!.catchupUrl(ch.id, p.start, mins + 5, Repo.serverZone))
+        PlayerActivity.vod(context, "${ch.name}: ${p.title}", Repo.catchupUrl(ch.id, p.start, mins + 5))
     }
 
     val body: @Composable () -> Unit = {
@@ -209,7 +213,7 @@ fun HubApp() {
                         Kind.Live -> watchLive(rows.map { it.ref as Channel }, index)
                         Kind.Movies -> {
                             val m = rows[index].ref as Movie
-                            val resume = Repo.historyFor("Movie").firstOrNull { it.itemId == m.id.toString() }?.positionMs ?: 0L
+                            val resume = Repo.historyFor("Movie").firstOrNull { it.itemId == Repo.realId(m.id).toString() && it.playlistId == Repo.playlistIdOf(m.id) }?.positionMs ?: 0L
                             playMovie(m, resume)
                         }
                         Kind.Series -> {}
@@ -221,9 +225,9 @@ fun HubApp() {
             }
             is Screen.Episodes -> {
                 val playEp: (Show, Episode) -> Unit = { show, ep ->
-                    val resume = Repo.historyFor("Episode").firstOrNull { it.itemId == ep.id }?.positionMs ?: 0L
-                    PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.api!!.episodeUrl(ep.id, ep.ext),
-                        "Episode", ep.id, show.icon, ep.ext, resume)
+                    val resume = Repo.historyFor("Episode").firstOrNull { it.itemId == ep.id && it.playlistId == Repo.playlistIdOf(show.id) }?.positionMs ?: 0L
+                    PlayerActivity.vod(context, "${show.name}  S${ep.season}E${ep.number}", Repo.episodeUrl(show.id, ep.id, ep.ext),
+                        "Episode", ep.id, show.icon, ep.ext, resume, Repo.playlistIdOf(show.id))
                 }
                 if (isTv) EpisodesScreen(s.show, playEp) else PhoneEpisodesScreen(s.show, playEp)
             }

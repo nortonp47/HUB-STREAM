@@ -87,6 +87,7 @@ class PlayerActivity : ComponentActivity() {
     // What to remember in "continue watching" for movies and episodes.
     private var histKind = ""
     private var histId = ""
+    private var histPl = ""
     private var histIcon = ""
     private var histExt = ""
     private var lastSaved = 0L
@@ -120,6 +121,7 @@ class PlayerActivity : ComponentActivity() {
             subtitle = ""
             histKind = intent.getStringExtra(EXTRA_KIND) ?: ""
             histId = intent.getStringExtra(EXTRA_ITEM) ?: ""
+            histPl = intent.getStringExtra(EXTRA_PL) ?: Repo.activeId
             histIcon = intent.getStringExtra(EXTRA_ICON) ?: ""
             histExt = intent.getStringExtra(EXTRA_EXT) ?: ""
             val resume = intent.getLongExtra(EXTRA_RESUME, 0L)
@@ -263,7 +265,7 @@ class PlayerActivity : ComponentActivity() {
         title = c.name
         subtitle = ""
         start(item.url, item.altUrl)
-        Repo.recordPlay("Live", c.id.toString(), c.name, c.icon, "", 0, 0, push = true)
+        Repo.recordPlay("Live", Repo.realId(c.id).toString(), c.name, c.icon, "", 0, 0, push = true, playlistId = Repo.playlistIdOf(c.id))
         showOverlay()
         epgJob?.cancel()
         epgJob = lifecycleScope.launch {
@@ -442,7 +444,7 @@ class PlayerActivity : ComponentActivity() {
         val dur = player.duration.coerceAtLeast(0)
         var pos = player.currentPosition
         if (dur > 0 && (pos > dur * 0.95 || dur - pos < 60_000)) pos = 0 // finished: start over next time
-        Repo.recordPlay(histKind, histId, title, histIcon, histExt, pos, dur, push)
+        Repo.recordPlay(histKind, histId, title, histIcon, histExt, pos, dur, push, histPl)
     }
 
     override fun onStop() {
@@ -468,6 +470,7 @@ class PlayerActivity : ComponentActivity() {
         private const val EXTRA_LIVE = "live"
         private const val EXTRA_URL = "url"
         private const val EXTRA_TITLE = "title"
+        private const val EXTRA_PL = "pl"
         private const val EXTRA_KIND = "kind"
         private const val EXTRA_ITEM = "item"
         private const val EXTRA_ICON = "icon"
@@ -482,12 +485,13 @@ class PlayerActivity : ComponentActivity() {
         fun vod(
             context: Context, title: String, url: String,
             kind: String = "", itemId: String = "", icon: String = "", ext: String = "", resumeMs: Long = 0L,
+            playlistId: String = "",
         ) {
             context.startActivity(
                 Intent(context, PlayerActivity::class.java)
                     .putExtra(EXTRA_LIVE, false).putExtra(EXTRA_TITLE, title).putExtra(EXTRA_URL, url)
                     .putExtra(EXTRA_KIND, kind).putExtra(EXTRA_ITEM, itemId).putExtra(EXTRA_ICON, icon)
-                    .putExtra(EXTRA_EXT, ext).putExtra(EXTRA_RESUME, resumeMs)
+                    .putExtra(EXTRA_EXT, ext).putExtra(EXTRA_RESUME, resumeMs).putExtra(EXTRA_PL, playlistId)
             )
         }
     }

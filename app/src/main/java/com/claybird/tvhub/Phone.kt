@@ -192,7 +192,7 @@ fun PhoneEpisodesScreen(show: Show, onPlayEpisode: (Show, Episode) -> Unit) {
     var episodes by remember(show.id) { mutableStateOf<List<Episode>?>(null) }
     var error by remember(show.id) { mutableStateOf("") }
     LaunchedEffect(show.id) {
-        runCatching { withContext(Dispatchers.IO) { Repo.api!!.seriesEpisodes(show.id) } }
+        runCatching { withContext(Dispatchers.IO) { Repo.seriesEpisodes(show.id) } }
             .onSuccess { episodes = it }
             .onFailure { error = it.message ?: "Couldn't load episodes"; episodes = emptyList() }
     }
