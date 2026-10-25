@@ -166,7 +166,7 @@ class XtreamApi(private val creds: Credentials) {
                 )
             }
         }
-        return out.sortedWith(compareBy({ it.season }, { it.number }))
+        return out.distinctBy { it.id }.sortedWith(compareBy({ it.season }, { it.number }))
     }
 
     companion object {
@@ -183,7 +183,7 @@ class XtreamApi(private val creds: Credentials) {
             return (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 Category(o.optString("category_id"), o.optString("category_name").trim())
-            }
+            }.distinctBy { it.id }
         }
 
         fun parseChannels(text: String): List<Channel> {
@@ -198,7 +198,7 @@ class XtreamApi(private val creds: Credentials) {
                     epgId = o.optString("epg_channel_id"),
                     archive = o.optInt("tv_archive", 0) == 1,
                 )
-            }
+            }.distinctBy { it.id }
         }
 
         fun parseMovies(text: String): List<Movie> {
@@ -214,7 +214,7 @@ class XtreamApi(private val creds: Credentials) {
                     rating = o.optString("rating"),
                     added = o.optString("added").toLongOrNull() ?: 0L,
                 )
-            }
+            }.distinctBy { it.id }
         }
 
         fun parseShows(text: String): List<Show> {
@@ -229,7 +229,7 @@ class XtreamApi(private val creds: Credentials) {
                     rating = o.optString("rating"),
                     plot = o.optString("plot"),
                 )
-            }
+            }.distinctBy { it.id }
         }
     }
 }

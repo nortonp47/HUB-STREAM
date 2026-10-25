@@ -35,7 +35,7 @@ object Epg {
         private set
     var ready by mutableStateOf(false)
         private set
-    private var loading = false
+    private var loadingFor: String? = null
 
     fun init(context: Context) {
         if (!::appContext.isInitialized) appContext = context.applicationContext
@@ -47,7 +47,7 @@ object Epg {
     fun current(c: Channel, now: Long): Prog? =
         forChannel(c)?.firstOrNull { it.start <= now && it.end > now }
 
-    private fun cacheFile() = File(appContext.filesDir, "epg_${Repo.activeId}.bin.gz")
+    private fun cacheFile(id: String = Repo.activeId) = File(appContext.filesDir, "epg_$id.bin.gz")
 
     fun clear(deleteFile: Boolean = true) {
         data = emptyMap()
@@ -58,33 +58,38 @@ object Epg {
     }
 
     suspend fun load(force: Boolean) {
-        if (loading || Repo.api == null || !Repo.loaded) return
-        loading = true
+        val api = Repo.api ?: return
+        if (!Repo.loaded) return
+        val id = Repo.activeId
+        // One load per playlist; a load for another playlist must not block this one.
+        if (loadingFor == id) return
+        loadingFor = id
+        val channels = Repo.live
         try {
             withContext(Dispatchers.IO) {
-                val f = cacheFile()
+                val f = cacheFile(id)
                 val fresh = f.exists() && System.currentTimeMillis() - f.lastModified() < MAX_AGE_MS
-                if (!force && fresh && readCache(f)) return@withContext
+                if (!force && fresh && readCache(f, id)) return@withContext
                 try {
-                    status = "Guide: downloading (the first time can take a minute)..."
-                    download(f)
+                    if (Repo.activeId == id) status = "Guide: downloading (the first time can take a minute)..."
+                    download(f, id, api, channels)
                 } catch (e: Throwable) {
-                    if (f.exists() && readCache(f)) {
-                        status = "Guide: couldn't refresh (${e.message}); using saved copy"
-                    } else {
-                        status = "Guide: couldn't load (${e.message})"
+                    val msg = if (e is OutOfMemoryError) "not enough memory" else e.message
+                    if (f.exists() && readCache(f, id)) {
+                        if (Repo.activeId == id) status = "Guide: couldn't refresh ($msg); using saved copy"
+                    } else if (Repo.activeId == id) {
+                        status = "Guide: couldn't load ($msg)"
                     }
                 }
             }
         } finally {
-            loading = false
+            if (loadingFor == id) loadingFor = null
         }
     }
 
-    private fun download(cache: File) {
-        val api = Repo.api ?: return
+    private fun download(cache: File, id: String, api: XtreamApi, channels: List<Channel>) {
         val wanted = HashSet<String>()
-        for (c in Repo.live) if (c.epgId.isNotBlank()) wanted.add(c.epgId.lowercase())
+        for (c in channels) if (c.epgId.isNotBlank()) wanted.add(c.epgId.lowercase())
         val now = System.currentTimeMillis() / 1000
         val minT = now - 12 * 3600
         val maxT = now + 48 * 3600
@@ -122,7 +127,7 @@ object Epg {
                     result.getOrPut(chan) { ArrayList() }.add(Prog(start, stop, title, desc))
                     keep = false
                     count++
-                    if (count % 20000 == 0) status = "Guide: reading... $count shows"
+                    if (count % 20000 == 0 && Repo.activeId == id) status = "Guide: reading... $count shows"
                 }
                 event = parser.next()
             }
@@ -131,12 +136,14 @@ object Epg {
         }
         val built = HashMap<String, Array<Prog>>(result.size * 2)
         for ((k, v) in result) built[k] = v.sortedBy { it.start }.toTypedArray()
+        writeCache(cache, built)
+        // The playlist may have been switched while this downloaded: keep the file, don't show it.
+        if (Repo.activeId != id) return
         data = built
         ready = built.isNotEmpty()
         version++
         status = if (built.isEmpty()) "Guide: the provider sent no guide data for your channels"
         else "Guide ready: ${built.size} channels"
-        writeCache(cache, built)
     }
 
     private fun writeCache(f: File, map: Map<String, Array<Prog>>) {
@@ -155,7 +162,7 @@ object Epg {
         }.onFailure { f.delete() }
     }
 
-    private fun readCache(f: File): Boolean = try {
+    private fun readCache(f: File, id: String): Boolean = try {
         val map = HashMap<String, Array<Prog>>()
         DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream()), 64 * 1024)).use { inp ->
             val n = inp.readInt()
@@ -165,12 +172,14 @@ object Epg {
                 map[k] = Array(m) { Prog(inp.readLong(), inp.readLong(), inp.readUTF(), inp.readUTF()) }
             }
         }
-        data = map
-        ready = map.isNotEmpty()
-        version++
-        status = "Guide ready: ${map.size} channels"
+        if (Repo.activeId == id) {
+            data = map
+            ready = map.isNotEmpty()
+            version++
+            status = "Guide ready: ${map.size} channels"
+        }
         map.isNotEmpty()
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         f.delete()
         false
     }

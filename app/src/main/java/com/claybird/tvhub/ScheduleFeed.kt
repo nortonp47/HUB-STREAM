@@ -76,7 +76,8 @@ object ScheduleFeed {
         val all = coroutineScope {
             LEAGUES.map { l -> async(Dispatchers.IO) { runCatching { fetch(l, range) }.getOrDefault(emptyList()) } }.awaitAll()
         }.flatten()
-        cache = now to all
+        // Don't remember an empty answer: it is usually a failed request, and would hide games for minutes.
+        if (all.isNotEmpty()) cache = now to all
         return all
     }
 

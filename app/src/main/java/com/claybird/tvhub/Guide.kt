@@ -68,7 +68,7 @@ fun ChipRow(items: List<Pair<String, String>>, selected: String, onSelect: (Stri
         contentPadding = PaddingValues(horizontal = 12.dp),
         modifier = Modifier.padding(vertical = 6.dp),
     ) {
-        items(items, key = { it.first }) { (id, label) ->
+        items(items.distinctBy { it.first }, key = { it.first }) { (id, label) ->
             var focused by remember { mutableStateOf(false) }
             val on = selected == id
             Box(
@@ -319,8 +319,8 @@ fun SportsScreen(isTv: Boolean, onWatch: (List<List<Channel>>, Int, Int) -> Unit
     var league by remember { mutableStateOf("all") }
     val epgVersion = Epg.version
 
-    LaunchedEffect(epgVersion, Repo.loaded) {
-        if (!Repo.loaded) return@LaunchedEffect
+    LaunchedEffect(epgVersion, Repo.loaded, Repo.activeId) {
+        if (!Repo.loaded) { result = null; return@LaunchedEffect }
         while (true) {
             result = withContext(Dispatchers.Default) {
                 val now = System.currentTimeMillis() / 1000
