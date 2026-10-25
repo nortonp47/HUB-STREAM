@@ -195,6 +195,22 @@ object Cloud {
         call("POST", "/rest/v1/curation?on_conflict=user_id,playlist_id", "[$body]", token(), "resolution=merge-duplicates,return=minimal")
     }
 
+    fun pullAddons(): List<Addon> {
+        val arr = JSONArray(call("GET", "/rest/v1/addons?select=url,name&order=position.asc,created_at.asc", bearer = token()))
+        return (0 until arr.length()).map { arr.getJSONObject(it).let { o -> Addon(o.getString("url"), o.optString("name")) } }
+    }
+
+    fun pushAddons(list: List<Addon>) {
+        if (list.isEmpty()) return
+        val arr = JSONArray()
+        list.forEachIndexed { i, a -> arr.put(JSONObject().put("url", a.url).put("name", a.name).put("position", i)) }
+        call("POST", "/rest/v1/addons?on_conflict=user_id,url", arr.toString(), token(), "resolution=merge-duplicates,return=minimal")
+    }
+
+    fun deleteAddon(url: String) {
+        call("DELETE", "/rest/v1/addons?url=eq.${enc(url)}", bearer = token())
+    }
+
     fun deleteFavorite(key: String) {
         call("DELETE", "/rest/v1/favorites?key=eq.${enc(key)}", bearer = token())
     }

@@ -106,6 +106,7 @@ object Repo {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
         installCrashLog()
+        AddonStore.init(appContext)
         val p = prefs()
         val json = p.getString("playlists", null)
         if (json != null) {
@@ -336,6 +337,15 @@ object Repo {
                 }
                 if (changedActive && loaded) applyCuration()
             }
+            runCatching {
+                val cloudAddons = Cloud.pullAddons()
+                val local = AddonStore.addons
+                val extra = local.filter { l -> cloudAddons.none { it.url == l.url } }
+                if (firstTime) {
+                    AddonStore.replace(cloudAddons + extra)
+                    if (extra.isNotEmpty()) Cloud.pushAddons(AddonStore.addons)
+                } else AddonStore.replace(cloudAddons)
+            }
             "Synced: ${merged.size} playlist(s), ${favorites.size} favorite(s)"
         } catch (e: Exception) {
             "Couldn't sync: ${e.message}"
@@ -395,6 +405,13 @@ object Repo {
         liveCategories = lcs; movieCategories = mcs; showCategories = scs
         if (loaded) status = "${live.size} channels, ${movies.size} movies, ${shows.size} shows"
         curationVersion++
+    }
+
+    fun pushAddonsBackground(removed: String? = null) {
+        if (!Cloud.signedIn) return
+        io.launch {
+            runCatching { if (removed != null) Cloud.deleteAddon(removed) else Cloud.pushAddons(AddonStore.addons) }
+        }
     }
 
     fun pushCurationBackground() {

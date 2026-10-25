@@ -115,6 +115,7 @@ sealed class Screen {
     object Search : Screen()
     object Curate : Screen()
     object Discover : Screen()
+    object Addons : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -197,7 +198,9 @@ fun HubApp() {
             Screen.Discover -> DiscoverScreen(
                 isTv = isTv, onPlayMovie = playMovie,
                 onOpenShow = { screen = Screen.Episodes(it, Screen.Discover) },
+                onPlayUrl = { title, url -> PlayerActivity.vod(context, title, url) },
             )
+            Screen.Addons -> AddonsScreen(isTv)
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive, onCatchUp = catchUp)
             Screen.Search -> SearchScreen(
                 isTv = isTv, onLive = watchLive, onMovie = playMovie, onResume = resumeItem,
@@ -299,6 +302,7 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
         "Shows" to { onOpen(Screen.Browse(Kind.Series)) },
         "Search" to { onOpen(Screen.Search) },
         "Discover (IMDb)" to { onOpen(Screen.Discover) },
+        "Add-ons" to { onOpen(Screen.Addons) },
         "Voice Search" to onSearch,
         "Favorite Channels" to { onOpen(Screen.Browse(Kind.Live, favorites = true)) },
         "Favorite Movies" to { onOpen(Screen.Browse(Kind.Movies, favorites = true)) },

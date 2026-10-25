@@ -36,6 +36,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -54,6 +55,54 @@ object Stremio {
         "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy",
         "History", "Horror", "Mystery", "Romance", "Sci-Fi", "Sport", "Thriller", "War", "Western",
     )
+
+    private fun getJson(url: String, timeout: Int = 25000): JSONObject {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = timeout
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("User-Agent", "Hub/1.0")
+        try {
+            if (conn.responseCode != 200) throw java.io.IOException("HTTP ${conn.responseCode}")
+            return JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Reads an add-on's manifest. Returns its name, or throws. [resources] says whether it can give streams. */
+    fun manifest(url: String): Pair<String, Boolean> {
+        val m = getJson(url)
+        val res = m.optJSONArray("resources")
+        var streams = false
+        if (res != null) for (i in 0 until res.length()) {
+            val r = res.opt(i)
+            if (r == "stream" || (r is JSONObject && r.optString("name") == "stream")) streams = true
+        }
+        return m.optString("name", "Add-on") to streams
+    }
+
+    /** Asks one add-on for streams of a movie ("tt123") or an episode ("tt123:1:2"). */
+    fun streams(addon: Addon, type: String, id: String): List<StreamOpt> {
+        val arr = getJson("${addon.base}/stream/$type/${URLEncoder.encode(id, "UTF-8")}.json", 45000).optJSONArray("streams") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val u = o.optString("url")
+            if (!u.startsWith("http")) return@mapNotNull null
+            val title = o.optString("title").ifBlank { o.optString("description") }
+            StreamOpt(addon.name, o.optString("name").replace("\n", " ").trim(), title.trim(), u)
+        }
+    }
+
+    fun videos(type: String, id: String): List<Video> {
+        val arr = getJson("$CINEMETA/meta/$type/$id.json").optJSONObject("meta")?.optJSONArray("videos") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val season = o.optInt("season", 0)
+            val ep = o.optInt("episode", o.optInt("number", 0))
+            if (season < 1 || ep < 1) null else Video(o.optString("id"), season, ep, o.optString("name").ifBlank { o.optString("title") })
+        }.sortedWith(compareBy({ it.season }, { it.episode }))
+    }
 
     fun catalog(base: String, type: String, catalog: String, genre: String?, skip: Int): List<MetaItem> {
         val extras = ArrayList<String>()
@@ -89,6 +138,53 @@ object Stremio {
     }
 }
 
+/** An installed Stremio add-on (its manifest.json link). */
+class Addon(val url: String, val name: String) {
+    val base: String get() = url.substringBefore("/manifest.json").trimEnd('/')
+}
+
+/** A playable stream an add-on returned (only direct links; torrents without a debrid link can't play here). */
+class StreamOpt(val addon: String, val name: String, val detail: String, val url: String)
+
+class Video(val id: String, val season: Int, val episode: Int, val title: String)
+
+object AddonStore {
+    var addons by mutableStateOf<List<Addon>>(emptyList())
+        private set
+    private lateinit var ctx: android.content.Context
+
+    fun init(c: android.content.Context) {
+        if (::ctx.isInitialized) return
+        ctx = c.applicationContext
+        runCatching {
+            val arr = JSONArray(ctx.getSharedPreferences("hub", android.content.Context.MODE_PRIVATE).getString("addons", "[]"))
+            addons = (0 until arr.length()).map { arr.getJSONObject(it).let { o -> Addon(o.getString("u"), o.optString("n")) } }
+        }
+    }
+
+    private fun save() {
+        val arr = JSONArray()
+        addons.forEach { arr.put(JSONObject().put("u", it.url).put("n", it.name)) }
+        ctx.getSharedPreferences("hub", android.content.Context.MODE_PRIVATE).edit().putString("addons", arr.toString()).apply()
+    }
+
+    fun add(a: Addon) {
+        addons = addons.filter { it.url != a.url } + a
+        save()
+    }
+
+    fun remove(url: String) {
+        addons = addons.filter { it.url != url }
+        save()
+    }
+
+    /** Replace with the account's list (called after sync). */
+    fun replace(list: List<Addon>) {
+        addons = list
+        save()
+    }
+}
+
 /** Kept outside the screen so choices and results survive going into a title and back. */
 object DiscoverState {
     var type by mutableStateOf("movie")
@@ -105,12 +201,14 @@ private fun titleKey(s: String) = s.lowercase().replace(Regex("\\((19|20)\\d{2}\
 
 /** Browse popular, top-rated (IMDb) and new titles; watch the ones already on your playlists. */
 @Composable
-fun DiscoverScreen(isTv: Boolean, onPlayMovie: (Movie, Long) -> Unit, onOpenShow: (Show) -> Unit) {
+fun DiscoverScreen(isTv: Boolean, onPlayMovie: (Movie, Long) -> Unit, onOpenShow: (Show) -> Unit, onPlayUrl: (String, String) -> Unit) {
     val st = DiscoverState
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var picked by remember { mutableStateOf<MetaItem?>(null) }
     var more by remember { mutableStateOf(0) }
+    var finding by remember { mutableStateOf<MetaItem?>(null) }
+    finding?.let { StreamPicker(it, onPlay = onPlayUrl, onClose = { finding = null }); return }
 
     LaunchedEffect(st.type, st.catalog, st.genre, st.year, more) {
         val key = "${st.type}|${st.catalog}|${if (st.catalog == "year") st.year.toString() else st.genre}"
@@ -154,7 +252,8 @@ fun DiscoverScreen(isTv: Boolean, onPlayMovie: (Movie, Long) -> Unit, onOpenShow
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (movieMatch != null) FocusButton("Watch (your playlist)", Modifier.weight(1f).height(46.dp), textSize = 15.sp) { onPlayMovie(movieMatch, 0L) }
                     else if (showMatch != null) FocusButton("Open (your playlist)", Modifier.weight(1f).height(46.dp), textSize = 15.sp) { onOpenShow(showMatch) }
-                    else Text("Not on your playlists. Stremio add-ons for streams are coming next.", fontSize = 13.sp, color = HubMuted, modifier = Modifier.weight(1f))
+                    else Text("Not on your playlists.", fontSize = 13.sp, color = HubMuted, modifier = Modifier.weight(1f))
+                    FocusButton("Find streams", Modifier.weight(1f).height(46.dp), textSize = 15.sp) { finding = p }
                     FocusButton("Close", Modifier.width(90.dp).height(46.dp), textSize = 15.sp) { picked = null }
                 }
             }
@@ -190,6 +289,130 @@ fun DiscoverScreen(isTv: Boolean, onPlayMovie: (Movie, Long) -> Unit, onOpenShow
                 FocusButton(if (loading) "Loading..." else "Load more", Modifier.fillMaxWidth().padding(16.dp).height(48.dp)) { if (!loading) more++ }
             }
             item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+}
+
+
+/** Lists streams from your add-ons for a title (and, for shows, lets you pick the episode). */
+@Composable
+fun StreamPicker(item: MetaItem, onPlay: (String, String) -> Unit, onClose: () -> Unit) {
+    var videos by remember(item.id) { mutableStateOf<List<Video>?>(if (item.type == "series") null else emptyList()) }
+    var season by remember(item.id) { mutableStateOf(1) }
+    var chosenId by remember(item.id) { mutableStateOf(if (item.type == "series") "" else item.id) }
+    var results by remember(item.id) { mutableStateOf<List<StreamOpt>?>(null) }
+    var status by remember(item.id) { mutableStateOf("") }
+    val addons = AddonStore.addons
+
+    LaunchedEffect(item.id) {
+        if (item.type == "series") {
+            videos = runCatching { withContext(Dispatchers.IO) { Stremio.videos("series", item.id) } }.getOrDefault(emptyList())
+            season = videos?.firstOrNull()?.season ?: 1
+        }
+    }
+    LaunchedEffect(chosenId, addons) {
+        if (chosenId.isEmpty()) return@LaunchedEffect
+        results = null; status = "Asking ${addons.size} add-on(s)..."
+        val all = ArrayList<StreamOpt>()
+        val errors = ArrayList<String>()
+        withContext(Dispatchers.IO) {
+            kotlinx.coroutines.coroutineScope {
+                addons.map { a -> kotlinx.coroutines.async { runCatching { Stremio.streams(a, item.type, chosenId) }.onFailure { errors += "${a.name}: ${it.message}" }.getOrDefault(emptyList()) } }
+                    .forEach { all += it.await() }
+            }
+        }
+        results = all
+        status = if (all.isEmpty()) (if (errors.isNotEmpty()) errors.joinToString("; ") else "No playable streams found.") else "${all.size} streams"
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+            Text(item.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 2)
+            FocusButton("Back", Modifier.width(90.dp).height(44.dp), textSize = 15.sp) { onClose() }
+        }
+        if (addons.isEmpty()) {
+            Text("No add-ons yet. Open More, then Add-ons, and paste an add-on link.", fontSize = 15.sp, color = HubMuted)
+            return@Column
+        }
+        if (item.type == "series") {
+            val v = videos
+            if (v == null) { Text("Loading episodes...", color = HubMuted); return@Column }
+            val seasons = v.map { it.season }.distinct()
+            ChipRow(seasons.map { it.toString() to "Season $it" }, season.toString()) { season = it.toInt(); chosenId = "" ; results = null }
+            if (chosenId.isEmpty()) {
+                LazyColumn {
+                    items(v.filter { it.season == season }, key = { it.id + it.episode }) { e ->
+                        Text("E${e.episode}  ${e.title}", fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth().clickable { chosenId = "${item.id}:${e.season}:${e.episode}" }.padding(vertical = 12.dp))
+                    }
+                }
+                return@Column
+            }
+        }
+        Text(status, fontSize = 13.sp, color = HubMuted, modifier = Modifier.padding(vertical = 4.dp))
+        val list = results.orEmpty()
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(list.size) { i ->
+                val r = list[i]
+                var focused by remember { mutableStateOf(false) }
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                        .onFocusChanged { focused = it.isFocused }
+                        .background(if (focused) HubGreen else HubSurface)
+                        .clickable { onPlay(item.name, r.url) }.padding(10.dp),
+                ) {
+                    Text(r.name.ifBlank { r.addon }, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (focused) Color.Black else Color.White, maxLines = 1)
+                    Text(r.detail, fontSize = 12.sp, color = if (focused) Color.Black else HubMuted, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+/** Install add-ons by pasting their manifest link (from the add-on's configure page). */
+@Composable
+fun AddonsScreen(isTv: Boolean) {
+    var link by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Add-ons", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = HubGreen)
+        Text("Stremio add-ons that give streams, for example AIOStreams, MediaFusion or Comet set up with your debrid key. Open the add-on's configure page, choose TorBox, paste your key, then copy the install link (it ends in manifest.json) and paste it here. Links with your key are saved to your HUB account.",
+            fontSize = 13.sp, color = HubMuted, modifier = Modifier.padding(vertical = 6.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = link, onValueChange = { link = it.trim() }, singleLine = true,
+            placeholder = { Text("https://.../manifest.json  (or stremio://...)") }, modifier = Modifier.fillMaxWidth(),
+        )
+        FocusButton(if (busy) "Checking..." else "Add add-on", Modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp)) {
+            if (busy || link.isBlank()) return@FocusButton
+            busy = true; msg = ""
+            val url = link.replace("stremio://", "https://")
+            scope.launch {
+                runCatching { withContext(Dispatchers.IO) { Stremio.manifest(url) } }
+                    .onSuccess { (name, hasStreams) ->
+                        val a = Addon(url, name)
+                        AddonStore.add(a)
+                        Repo.pushAddonsBackground()
+                        msg = "Added $name." + if (!hasStreams) " (It doesn't provide streams, so it won't be used for playback.)" else ""
+                        link = ""
+                    }
+                    .onFailure { msg = "Couldn't read that link: ${it.message}" }
+                busy = false
+            }
+        }
+        if (msg.isNotBlank()) Text(msg, fontSize = 14.sp, color = HubMuted, modifier = Modifier.padding(vertical = 6.dp))
+        Spacer(Modifier.height(10.dp))
+        Text("Installed (${AddonStore.addons.size})", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        LazyColumn {
+            items(AddonStore.addons, key = { it.url }) { a ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Text(a.name, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                    FocusButton("Remove", Modifier.width(110.dp).height(42.dp), textSize = 14.sp) {
+                        AddonStore.remove(a.url); Repo.pushAddonsBackground(removed = a.url)
+                    }
+                }
+            }
         }
     }
 }
