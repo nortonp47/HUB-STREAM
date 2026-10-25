@@ -72,14 +72,28 @@ object ScheduleFeed {
         cache?.let { if (!force && now - it.first < MAX_AGE_MS) return it.second }
         val fmt = DateTimeFormatter.BASIC_ISO_DATE
         val today = LocalDate.now()
-        val range = "${today.minusDays(1).format(fmt)}-${today.plusDays(1).format(fmt)}"
+        // One request per league per day: a date range is rejected by some leagues.
+        val days = listOf(-1L, 0L, 1L).map { today.plusDays(it).format(fmt) }
+        val errors = java.util.concurrent.atomic.AtomicInteger(0)
+        val lastError = java.util.concurrent.atomic.AtomicReference("")
         val all = coroutineScope {
-            LEAGUES.map { l -> async(Dispatchers.IO) { runCatching { fetch(l, range) }.getOrDefault(emptyList()) } }.awaitAll()
-        }.flatten()
-        // Don't remember an empty answer: it is usually a failed request, and would hide games for minutes.
-        if (all.isNotEmpty()) cache = now to all
+            LEAGUES.flatMap { l -> days.map { d -> l to d } }.map { (l, d) ->
+                async(Dispatchers.IO) {
+                    runCatching { fetch(l, d) }.getOrElse { e -> errors.incrementAndGet(); lastError.set("${l.label}: ${e.message}"); emptyList() }
+                }
+            }.awaitAll()
+        }.flatten().distinctBy { it.league.path + it.id }
+        failures = errors.get()
+        lastFailure = lastError.get()
+        cache = now to all
         return all
     }
+
+    /** How many league-day requests failed on the last load, and the last reason. */
+    var failures = 0
+        private set
+    var lastFailure = ""
+        private set
 
     private fun fetch(l: League, range: String): List<SchedGame> {
         val url = "https://site.api.espn.com/apis/site/v2/sports/${l.path}/scoreboard?dates=$range&limit=300"
@@ -88,7 +102,7 @@ object ScheduleFeed {
         conn.readTimeout = 20000
         conn.setRequestProperty("User-Agent", "Hub/1.0")
         try {
-            if (conn.responseCode != 200) return emptyList()
+            if (conn.responseCode != 200) throw java.io.IOException("HTTP ${conn.responseCode}")
             val text = conn.inputStream.use { s -> val o = ByteArrayOutputStream(); s.copyTo(o); o.toString("UTF-8") }
             val events = JSONObject(text).optJSONArray("events") ?: return emptyList()
             val out = ArrayList<SchedGame>()

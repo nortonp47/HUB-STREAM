@@ -170,10 +170,11 @@ object SportsMatcher {
             cards += GameCard(g, ranked, importance(g))
         }
         // Games the feed doesn't cover (cricket, rugby, ...), from the guide keywords.
-        val leftovers = Games.group(items.filter { it.channel.id !in matchedChannels && it.sport !in coveredSports })
+        val leftovers = Games.group(items.filter { it.channel.id !in matchedChannels })
         val live = relevant.count { it.live }
         val withStreams = cards.count { it.streams.isNotEmpty() }
         val diag = "Feed: ${games.size} games ($live live now). Found channels for $withStreams of ${cards.size}." +
+            (if (ScheduleFeed.failures > 0) " ${ScheduleFeed.failures} feed requests failed (${ScheduleFeed.lastFailure})." else "") +
             (if (ambiguous.isNotEmpty()) " Same-time games on one network, skipped: " + ambiguous.entries.joinToString { "${it.key} x${it.value}" } else "")
         return SportsResult(cards, leftovers, diag)
     }
