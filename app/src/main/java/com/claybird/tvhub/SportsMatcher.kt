@@ -74,6 +74,46 @@ object SportsMatcher {
         return null
     }
 
+    // ---- event-feed channels: the matchup is in the channel name ("NCAAF12: West Virginia vs TCU 12:00 PM") ----
+    private class Feed(val ch: Channel, val a: String, val b: String, val month: Int, val day: Int)
+
+    private val feedRe = Regex("""^[^:]{2,30}:\s*(.+?)\s+(?:vs\.?|v\.?|@|at)\s+(.+?)(?:\s+\d{1,2}:\d{2}\s*[AaPp][Mm].*)?$""")
+    private val feedDate = Regex("""(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})""", RegexOption.IGNORE_CASE)
+    private val months = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+    private fun flatName(s: String): String {
+        val plain = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
+        return plain.lowercase().replace(Regex("\\(.*?\\)"), " ").replace("&", "and")
+            .replace(Regex("\\b(university|college|the|of)\\b"), " ").replace(Regex("[^a-z0-9]"), "")
+    }
+
+    private fun feeds(): List<Feed> = Repo.live.mapNotNull { ch ->
+        val m = feedRe.find(ch.name.trim()) ?: return@mapNotNull null
+        val d = feedDate.find(ch.name)
+        Feed(ch, flatName(m.groupValues[1]), flatName(m.groupValues[2]),
+            d?.let { months.indexOf(it.groupValues[1].lowercase()) + 1 } ?: 0, d?.groupValues?.get(2)?.toIntOrNull() ?: 0)
+    }
+
+    private fun teamKeys(t: Team) = listOf(t.location, t.shortName, t.displayName, t.location + t.name).map { flatName(it) }.filter { it.length >= 3 }.toSet()
+
+    private fun sideMatches(side: String, keys: Set<String>, loose: Boolean): Boolean =
+        side in keys || (loose && side.length >= 5 && keys.any { it.length >= 5 && (side.contains(it) || it.contains(side)) })
+
+    /** Channels whose name carries both teams, used when the guide and networks found nothing for a game. */
+    private fun feedMatches(all: List<Feed>, g: SchedGame, a: Team, h: Team): List<Channel> {
+        val ka = teamKeys(a); val kh = teamKeys(h)
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = g.start * 1000 }
+        val month = cal.get(java.util.Calendar.MONTH) + 1; val day = cal.get(java.util.Calendar.DAY_OF_MONTH)
+        val dated = all.filter { it.month == 0 || (it.month == month && it.day == day) }
+        for (loose in listOf(false, true)) {
+            val hit = dated.filter { f ->
+                (sideMatches(f.a, ka, loose) && sideMatches(f.b, kh, loose)) || (sideMatches(f.a, kh, loose) && sideMatches(f.b, ka, loose))
+            }
+            if (hit.isNotEmpty()) return hit.map { it.ch }
+        }
+        return emptyList()
+    }
+
     fun build(now: Long, games: List<SchedGame>, items: List<SportItem>): SportsResult {
         if (games.isEmpty()) return SportsResult(emptyList(), Games.group(items), "Game feed returned nothing (offline or blocked), using guide keywords only.")
         val horizon = now + 8 * 3600
@@ -115,6 +155,7 @@ object SportsMatcher {
         val claims = HashMap<SchedGame, List<String>>()
         for (g in relevant) claims[g] = g.networks.mapNotNull { networkKey(it) }
 
+        val eventFeeds = feeds()
         val cards = ArrayList<GameCard>()
         val ambiguous = HashMap<String, Int>()
         val matchedChannels = HashSet<Int>()
@@ -151,6 +192,13 @@ object SportsMatcher {
                             }
                         }
                     }
+                }
+            }
+            // Nothing by guide or name words: look through the event-feed channels (e.g. your NCAA category).
+            if (found.isEmpty() && a != null && h != null) {
+                for (ch in feedMatches(eventFeeds, g, a, h)) {
+                    found[ch.id] = SportItem(ch, Prog(g.start, g.start + 3 * 3600, g.title, ""), g.league.sport, g.live, catNames[ch.categoryId].orEmpty())
+                    strong += ch.id
                 }
             }
             // National network channels.
