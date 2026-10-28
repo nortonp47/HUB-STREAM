@@ -23,7 +23,7 @@ object LsuTv {
     private val rankRe = Regex("""^\s*(#\s*\d+|\(\s*\d+\s*\))\s*""")
 
     private val nets = listOf(
-        Regex("""\bESPN\s*\+|espn\+|\$espn""", RegexOption.IGNORE_CASE) to "ESPN+",
+        Regex("""\bESPN\s*\+|espn\+""", RegexOption.IGNORE_CASE) to "ESPN+",
         Regex("""\bESPN2\b""", RegexOption.IGNORE_CASE) to "ESPN2",
         Regex("""\bESPNU\b""", RegexOption.IGNORE_CASE) to "ESPNU",
         Regex("""\bESPN\b(?!\s*[2U+])""", RegexOption.IGNORE_CASE) to "ESPN",
