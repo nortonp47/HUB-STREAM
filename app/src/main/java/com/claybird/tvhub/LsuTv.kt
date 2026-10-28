@@ -9,7 +9,7 @@ import java.net.URL
  */
 object LsuTv {
     private const val URL_TV = "https://www.lsufootball.net/tvschedule.htm"
-    private const val MAX_AGE_MS = 30 * 60_000L
+    private const val MAX_AGE_MS = 15 * 60_000L
 
     class Line(val teams: List<String>, val networks: List<String>)
 
@@ -63,7 +63,9 @@ object LsuTv {
             val teams = parts.map { rankRe.replace(it, "").trim() }
             if (teams.any { it.isEmpty() || it.length > 40 }) continue
             val found = LinkedHashSet<String>()
-            for ((re, name) in nets) if (re.containsMatchIn(after)) found += name
+            // "ESPN2 / ESPN Video": only the cell before the slash is the channel; the rest is a video link.
+            val cell = after.substringBefore(" / ")
+            for ((re, name) in nets) if (re.containsMatchIn(if (name == "ESPN+" || name == "Peacock") after else cell)) found += name
             if (found.isEmpty()) continue
             out += Line(teams, found.toList())
         }
@@ -86,13 +88,16 @@ object LsuTv {
         }
     }
 
-    private fun flat(s: String) = s.lowercase().replace("&", "and").replace(Regex("[^a-z0-9]"), "")
+    private fun flat(s: String): String {
+        val plain = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
+        return plain.lowercase().replace("&", "and").replace(Regex("[^a-z0-9]"), "").replace("miamiohio", "miamioh")
+    }
 
     private fun same(lineTeam: String, t: Team): Boolean {
         val a = flat(lineTeam)
         if (a.isEmpty()) return false
         return listOf(t.location, t.shortName, t.displayName).map { flat(it) }.filter { it.length >= 3 }
-            .any { it == a || (it.length >= 5 && (a.startsWith(it) || it.startsWith(a)) && a.length >= 5) }
+            .any { it == a }
     }
 
     /** Adds the list's channels to matching college football games. Never throws. */
