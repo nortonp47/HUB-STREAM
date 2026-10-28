@@ -354,7 +354,7 @@ fun SportsScreen(isTv: Boolean, onWatch: (List<List<Channel>>, Int, Int) -> Unit
         val labels = (cards.map { it.game.league.label } + left.map { it.sport.label }).groupingBy { it }.eachCount()
         ChipRow(listOf("all" to "All (${cards.size + left.size})") + labels.map { it.key to "${it.key} (${it.value})" }, league) { league = it }
 
-        if (res.diag.isNotBlank()) Text(res.diag, fontSize = 11.sp, color = HubMuted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+        if (res.diag.isNotBlank()) Text(res.diag + (LsuTv.note.takeIf { it.isNotBlank() }?.let { "  |  $it" } ?: ""), fontSize = 11.sp, color = HubMuted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
         val cardsShown = cards.filter { league == "all" || it.game.league.label == league }
             .sortedWith(if (mode == "later") compareBy<GameCard>({ it.game.start / 1800 }).thenByDescending { it.importance } else compareByDescending { it.importance })
         val leftShown = left.filter { league == "all" || it.sport.label == league }

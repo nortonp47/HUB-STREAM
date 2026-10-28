@@ -85,8 +85,9 @@ object ScheduleFeed {
         }.flatten().distinctBy { it.league.path + it.id }
         failures = errors.get()
         lastFailure = lastError.get()
-        cache = now to all
-        return all
+        val enriched = withContext(Dispatchers.IO) { LsuTv.enrich(all) }
+        cache = now to enriched
+        return enriched
     }
 
     /** How many league-day requests failed on the last load, and the last reason. */
