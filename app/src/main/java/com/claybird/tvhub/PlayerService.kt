@@ -62,10 +62,7 @@ class PlaybackService : MediaLibraryService() {
                     .setIsBrowsable(browsable).setIsPlayable(!browsable).build()
             ).build()
 
-    private suspend fun ensureLoaded() {
-        Repo.init(applicationContext)
-        if (!Repo.loaded && Repo.hasLogin) Repo.refresh(force = false)
-    }
+    private suspend fun ensureLoaded() = ensureRepoLoaded(applicationContext)
 
     private fun channelItem(c: Channel) = item("ch:${c.id}", c.name, false)
 
@@ -160,4 +157,10 @@ class PlaybackService : MediaLibraryService() {
         session = null
         super.onDestroy()
     }
+}
+
+/** Makes sure the channel lists are loaded (from the cache if possible) when no screen has done it yet. */
+suspend fun ensureRepoLoaded(context: Context) {
+    Repo.init(context.applicationContext)
+    if (!Repo.loaded && Repo.hasLogin) Repo.refresh(force = false)
 }
