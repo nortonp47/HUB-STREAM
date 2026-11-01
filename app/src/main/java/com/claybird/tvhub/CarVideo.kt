@@ -15,6 +15,9 @@ import androidx.car.app.constraints.ConstraintManager
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarColor
+import androidx.car.app.model.CarIcon
+import androidx.car.app.model.MessageTemplate
+import androidx.core.graphics.drawable.IconCompat
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
@@ -116,22 +119,29 @@ class CarVideoScreen(ctx: CarContext) : Screen(ctx) {
         playAt(index)
     }
 
-    override fun onGetTemplate(): Template {
+    private fun icon(res: Int) = CarIcon.Builder(IconCompat.createWithResource(carContext, res)).build()
+
+    override fun onGetTemplate(): Template = try {
+        // The car allows only two actions with text in the navigation strip, so the rest are icons.
         val strip = ActionStrip.Builder()
             .addAction(Action.Builder().setTitle("Channels").setOnClickListener {
                 screenManager.push(GroupsScreen(carContext, this))
             }.build())
-            .addAction(Action.Builder().setTitle("Prev").setOnClickListener { playAt(CarState.index - 1) }.build())
-            .addAction(Action.Builder().setTitle("Next").setOnClickListener { playAt(CarState.index + 1) }.build())
-            .addAction(Action.Builder().setTitle(if (player.playWhenReady) "Pause" else "Play").setOnClickListener {
-                player.playWhenReady = !player.playWhenReady
-                invalidate()
-            }.build())
+            .addAction(Action.Builder().setIcon(icon(android.R.drawable.ic_media_previous)).setOnClickListener { playAt(CarState.index - 1) }.build())
+            .addAction(Action.Builder().setIcon(icon(if (player.playWhenReady) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play))
+                .setOnClickListener {
+                    player.playWhenReady = !player.playWhenReady
+                    invalidate()
+                }.build())
+            .addAction(Action.Builder().setIcon(icon(android.R.drawable.ic_media_next)).setOnClickListener { playAt(CarState.index + 1) }.build())
             .build()
-        return NavigationTemplate.Builder()
+        NavigationTemplate.Builder()
             .setActionStrip(strip)
             .setBackgroundColor(CarColor.createCustom(Color.BLACK, Color.BLACK))
             .build()
+    } catch (e: Throwable) {
+        // Show the problem on the car screen instead of crashing Android Auto.
+        MessageTemplate.Builder("Hub video could not start: ${e.javaClass.simpleName}: ${e.message}").setTitle("Hub").setHeaderAction(Action.APP_ICON).build()
     }
 }
 
