@@ -106,6 +106,7 @@ class PlayerActivity : ComponentActivity() {
 
         isLive = intent.getBooleanExtra(EXTRA_LIVE, true)
         player = PlayerHolder.get(this)
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, false).build()
         attachListener()
         if (!isTv) {
             startService(Intent(this, PlaybackService::class.java))
