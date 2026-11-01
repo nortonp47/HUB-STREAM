@@ -21,6 +21,8 @@ import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.car.app.validation.HostValidator
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import kotlinx.coroutines.CoroutineScope
