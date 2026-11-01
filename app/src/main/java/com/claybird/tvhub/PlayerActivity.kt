@@ -168,8 +168,15 @@ class PlayerActivity : ComponentActivity() {
                                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                                 setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
                                 this.player = this@PlayerActivity.player
+                                CarBridge.pv = this
+                                // The car screen already has the picture: keep it there.
+                                if (CarBridge.casting) CarBridge.surface?.let { s -> this@PlayerActivity.player.setVideoSurface(s) }
                             }
                         },
+                    )
+                    if (CarBridge.casting) Text(
+                        "Playing on the car screen", color = Color.White, fontSize = 16.sp,
+                        modifier = Modifier.align(Alignment.Center),
                     )
                     if (!inPip && (overlay || !playing || message.isNotEmpty())) InfoOverlay()
                 }
@@ -394,6 +401,9 @@ class PlayerActivity : ComponentActivity() {
                             }
                         }
                         if (pipAllowed()) FocusButton("PiP", Modifier.weight(1f).height(48.dp)) { enterPip() }
+                        if (CarBridge.surface != null) FocusButton(
+                            if (CarBridge.casting) "On phone" else "Car screen", Modifier.weight(1f).height(48.dp),
+                        ) { if (CarBridge.casting) CarBridge.release() else CarBridge.send(player) }
                     }
                 }
             }

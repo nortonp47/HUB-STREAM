@@ -43,6 +43,26 @@ class HubCarService : CarAppService() {
     }
 }
 
+/** Shared between the phone player and the car screen, so playback started on the phone can show in the car. */
+object CarBridge {
+    var surface by androidx.compose.runtime.mutableStateOf<Surface?>(null)
+    var casting by androidx.compose.runtime.mutableStateOf(false)
+    var pv: androidx.media3.ui.PlayerView? = null
+
+    /** Phone view back on screen again (called when the car screen goes away or you tap the button). */
+    fun release() {
+        if (!casting) return
+        casting = false
+        pv?.let { v -> val p = v.player; v.player = null; v.player = p }
+    }
+
+    fun send(player: androidx.media3.exoplayer.ExoPlayer) {
+        val s = surface ?: return
+        player.setVideoSurface(s)
+        casting = true
+    }
+}
+
 private object CarState {
     var list: List<Channel> = emptyList()
     var index = 0
@@ -58,13 +78,17 @@ class CarVideoScreen(ctx: CarContext) : Screen(ctx) {
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(object : SurfaceCallback {
             override fun onSurfaceAvailable(c: SurfaceContainer) {
                 surface = c.surface
+                CarBridge.surface = c.surface
                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false).build()
                 player.setVideoSurface(c.surface)
+                // Something already playing from the phone: show it on the car screen too.
+                if (player.currentMediaItem != null) CarBridge.casting = true
             }
 
             override fun onSurfaceDestroyed(c: SurfaceContainer) {
-                player.clearVideoSurface()
                 surface = null
+                CarBridge.surface = null
+                if (CarBridge.casting) CarBridge.release() else player.clearVideoSurface()
             }
         })
     }
