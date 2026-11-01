@@ -67,7 +67,9 @@
         <!-- Android Auto video (experimental): shown as a navigation-style app, so it can draw video on the car screen. -->
         <service
             android:name=".HubCarService"
-            android:exported="true">
+            android:exported="true"
+            android:label="Hub Video"
+            android:icon="@drawable/ic_app">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
                 <category android:name="androidx.car.app.category.NAVIGATION" />
