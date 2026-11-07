@@ -262,6 +262,7 @@ fun HubApp() {
         // Phone: tabs along the bottom.
         Column(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.weight(1f)) { body() }
+            NowPlayingBar()
             val current = screen
             val tabs = listOf(
                 Triple("Guide", Screen.Guide, current == Screen.Guide),
