@@ -111,7 +111,7 @@ fun NowPlayingBar() {
                 Text("Live: use the tabs below to switch channels.", fontSize = 12.sp, color = HubMuted, modifier = Modifier.padding(vertical = 4.dp))
             }
             FocusButton("Stop playing", Modifier.fillMaxWidth().padding(top = 6.dp).height(40.dp), textSize = 13.sp) {
-                player.stop(); player.clearMediaItems(); open = false
+                player.stop(); player.clearMediaItems(); CarBridge.release(); open = false
             }
         }
     }

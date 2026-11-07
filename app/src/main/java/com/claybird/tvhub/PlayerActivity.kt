@@ -170,6 +170,8 @@ class PlayerActivity : ComponentActivity() {
                                 this.player = this@PlayerActivity.player
                                 CarBridge.pv = this
                                 // The car screen already has the picture: keep it there.
+                                // Car connected: anything started on the phone goes to the car screen automatically.
+                                if (!CarBridge.casting && CarBridge.surface != null && !isTv) CarBridge.send(this@PlayerActivity.player)
                                 if (CarBridge.casting) CarBridge.surface?.let { s -> this@PlayerActivity.player.setVideoSurface(s) }
                             }
                         },
@@ -468,7 +470,9 @@ class PlayerActivity : ComponentActivity() {
     override fun onDestroy() {
         listener?.let { player.removeListener(it) }
         listener = null
-        if (isFinishing) {
+        if (isFinishing && CarBridge.casting) {
+            // Playing on the car screen: leave it running; control it from the bar on the phone.
+        } else if (isFinishing) {
             // Left with Back: stop playback and dismiss the media notification.
             player.stop()
             player.clearMediaItems()
