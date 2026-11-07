@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.items
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -278,7 +279,7 @@ fun CarLogView() {
         FocusButton("Clear", androidx.compose.ui.Modifier.fillMaxWidth().height(44.dp)) { CarLog.clear() }
         androidx.compose.foundation.lazy.LazyColumn(modifier = androidx.compose.ui.Modifier.padding(top = 8.dp)) {
             if (CarLog.lines.isEmpty()) item { androidx.compose.material3.Text("(nothing yet)", color = HubMuted) }
-            androidx.compose.foundation.lazy.items(CarLog.lines.reversed()) { androidx.compose.material3.Text(it, fontSize = 13.sp, modifier = androidx.compose.ui.Modifier.padding(vertical = 2.dp)) }
+            items(CarLog.lines.reversed()) { androidx.compose.material3.Text(it, fontSize = 13.sp, modifier = androidx.compose.ui.Modifier.padding(vertical = 2.dp)) }
         }
     }
 }
