@@ -136,7 +136,7 @@ object KidSafe {
 }
 
 @Composable
-fun ProfilesScreen(isTv: Boolean, onDone: () -> Unit) {
+fun ProfilesScreen(isTv: Boolean, onDone: () -> Unit, onOpenLocal: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var role by remember { mutableStateOf("KID") }
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -156,6 +156,10 @@ fun ProfilesScreen(isTv: Boolean, onDone: () -> Unit) {
                     }
                 }
             }
+        }
+        if (!Profiles.isKid) {
+            Spacer(Modifier.height(8.dp))
+            FocusButton("My media (local files)", Modifier.fillMaxWidth().height(50.dp)) { onOpenLocal() }
         }
         if (Profiles.isAdmin) {
             Spacer(Modifier.height(14.dp))

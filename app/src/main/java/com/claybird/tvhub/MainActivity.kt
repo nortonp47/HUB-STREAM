@@ -118,6 +118,7 @@ sealed class Screen {
     object Addons : Screen()
     object ProfilePicker : Screen()
     object CarLogScreen : Screen()
+    object Local : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -150,6 +151,7 @@ fun HubApp() {
     // Only the admin sees settings, organizing and add-ons; others are sent back to the start.
     LaunchedEffect(Profiles.activeId, screen) {
         val s = screen
+        if (Profiles.isKid && s == Screen.Local) screen = Screen.ProfilePicker
         if (!Profiles.isAdmin && (s == Screen.Settings || s == Screen.Curate || s == Screen.Addons || s == Screen.Diagnostics || s == Screen.Setup && Repo.hasLogin))
             screen = Screen.ProfilePicker
     }
@@ -210,7 +212,8 @@ fun HubApp() {
             )
             Screen.Addons -> AddonsScreen(isTv)
             Screen.CarLogScreen -> CarLogView()
-            Screen.ProfilePicker -> ProfilesScreen(isTv, onDone = { screen = start })
+            Screen.Local -> LocalScreen(isTv)
+            Screen.ProfilePicker -> ProfilesScreen(isTv, onDone = { screen = start }, onOpenLocal = { screen = Screen.Local })
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive, onCatchUp = catchUp)
             Screen.Search -> SearchScreen(
                 isTv = isTv, onLive = watchLive, onMovie = playMovie, onResume = resumeItem,
@@ -315,6 +318,7 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
         "Search" to { onOpen(Screen.Search) },
         "Discover (IMDb)" to { onOpen(Screen.Discover) },
         "Add-ons" to { onOpen(Screen.Addons) },
+        "My media" to { onOpen(Screen.Local) },
         "Voice Search" to onSearch,
         "Profile: ${Profiles.active.name}" to { onOpen(Screen.ProfilePicker) },
         "Favorite Channels" to { onOpen(Screen.Browse(Kind.Live, favorites = true)) },
@@ -322,7 +326,7 @@ private fun HomeScreen(onSearch: () -> Unit, onOpen: (Screen) -> Unit) {
         "Favorite Shows" to { onOpen(Screen.Browse(Kind.Series, favorites = true)) },
         "Settings" to { onOpen(Screen.Settings) },
         "Diagnostics" to { onOpen(Screen.Diagnostics) },
-    ).filter { admin || (it.first != "Add-ons" && it.first != "Settings" && it.first != "Diagnostics") }
+    ).filter { (!Profiles.isKid || it.first != "My media") && (admin || (it.first != "Add-ons" && it.first != "Settings" && it.first != "Diagnostics")) }
 
     Column(modifier = Modifier.fillMaxSize().padding(48.dp)) {
         Text(

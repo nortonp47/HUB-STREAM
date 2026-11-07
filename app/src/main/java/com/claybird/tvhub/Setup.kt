@@ -295,6 +295,8 @@ fun SettingsScreen(isTv: Boolean, onOpen: (Screen) -> Unit) {
             Spacer(Modifier.height(6.dp))
             FocusButton("Android Auto log", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.CarLogScreen) }
             Spacer(Modifier.height(6.dp))
+            FocusButton("My media (local files)", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.Local) }
+            Spacer(Modifier.height(6.dp))
             Text("In use: ${active.name}. $info", fontSize = 14.sp, color = HubMuted)
             Text(Repo.status, fontSize = 14.sp, color = HubMuted)
             Spacer(Modifier.height(10.dp))
