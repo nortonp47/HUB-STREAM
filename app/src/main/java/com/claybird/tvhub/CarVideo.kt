@@ -272,6 +272,19 @@ fun CarLogView() {
     androidx.compose.runtime.LaunchedEffect(Unit) { CarLog.attach(context) }
     androidx.compose.foundation.layout.Column(modifier = androidx.compose.ui.Modifier.fillMaxSize().padding(16.dp)) {
         androidx.compose.material3.Text("Android Auto log", fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = HubGreen)
+        val installer = androidx.compose.runtime.remember {
+            runCatching {
+                val pm = context.packageManager
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    val i = pm.getInstallSourceInfo(context.packageName)
+                    "installed by ${i.installingPackageName ?: "nobody"}, started by ${i.initiatingPackageName ?: "nobody"}"
+                } else {
+                    @Suppress("DEPRECATION") "installed by ${pm.getInstallerPackageName(context.packageName) ?: "nobody"}"
+                }
+            }.getOrDefault("install source unknown")
+        }
+        androidx.compose.material3.Text("This copy of Hub was $installer (Play Store is com.android.vending)", fontSize = 13.sp, color = HubMuted,
+            modifier = androidx.compose.ui.Modifier.padding(bottom = 4.dp))
         androidx.compose.material3.Text(
             "Connect to the car, open Hub Video there, then come back here. An empty list means Android Auto never opened it.",
             fontSize = 13.sp, color = HubMuted, modifier = androidx.compose.ui.Modifier.padding(vertical = 6.dp),
