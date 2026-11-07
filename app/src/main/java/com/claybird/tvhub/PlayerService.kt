@@ -69,8 +69,10 @@ class PlaybackService : MediaLibraryService() {
     private val callback = object : MediaLibrarySession.Callback {
         override fun onGetLibraryRoot(
             session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: MediaLibraryService.LibraryParams?,
-        ): ListenableFuture<LibraryResult<MediaItem>> =
-            Futures.immediateFuture(LibraryResult.ofItem(item("root", "Hub", true), params))
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            CarLog.add(applicationContext, "Audio browse opened by ${browser.packageName}")
+            return Futures.immediateFuture(LibraryResult.ofItem(item("root", "Hub", true), params))
+        }
 
         override fun onGetChildren(
             session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int,

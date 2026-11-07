@@ -26,6 +26,9 @@ import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.car.app.validation.HostValidator
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.sp
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import kotlinx.coroutines.CoroutineScope
@@ -43,8 +46,44 @@ class HubCarService : CarAppService() {
     // Accepts any Android Auto host. Fine for a personal sideloaded app; a Play Store app would pin Google's hosts.
     override fun createHostValidator(): HostValidator = HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
 
-    override fun onCreateSession(): Session = object : Session() {
-        override fun onCreateScreen(intent: Intent): Screen = CarVideoScreen(carContext)
+    override fun onCreate() {
+        super.onCreate()
+        CarLog.add(this, "Video service started by Android Auto")
+    }
+
+    override fun onCreateSession(): Session {
+        CarLog.add(this, "Video session created (the car opened Hub Video)")
+        return object : Session() {
+            override fun onCreateScreen(intent: Intent): Screen {
+                CarLog.add(carContext, "Video screen created; car API level ${carContext.carAppApiLevel}")
+                return CarVideoScreen(carContext)
+            }
+        }
+    }
+}
+
+/** A short record of what Android Auto did with HUB, shown in Settings so problems can be diagnosed without the car. */
+object CarLog {
+    var lines by androidx.compose.runtime.mutableStateOf<List<String>>(emptyList())
+        private set
+    private var ctx: android.content.Context? = null
+
+    fun attach(c: android.content.Context) {
+        if (ctx != null) return
+        ctx = c.applicationContext
+        lines = ctx!!.getSharedPreferences("hub", android.content.Context.MODE_PRIVATE).getString("carlog", "")!!.split("\n").filter { it.isNotBlank() }
+    }
+
+    fun add(c: android.content.Context, msg: String) {
+        attach(c)
+        val t = java.text.SimpleDateFormat("MMM d HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        lines = (lines + "$t  $msg").takeLast(60)
+        ctx!!.getSharedPreferences("hub", android.content.Context.MODE_PRIVATE).edit().putString("carlog", lines.joinToString("\n")).apply()
+    }
+
+    fun clear() {
+        lines = emptyList()
+        ctx?.getSharedPreferences("hub", android.content.Context.MODE_PRIVATE)?.edit()?.remove("carlog")?.apply()
     }
 }
 
@@ -82,6 +121,7 @@ class CarVideoScreen(ctx: CarContext) : Screen(ctx) {
     init {
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(object : SurfaceCallback {
             override fun onSurfaceAvailable(c: SurfaceContainer) {
+                CarLog.add(carContext, "Car gave a video surface ${c.width}x${c.height}")
                 surface = c.surface
                 CarBridge.surface = c.surface
                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false).build()
@@ -91,6 +131,7 @@ class CarVideoScreen(ctx: CarContext) : Screen(ctx) {
             }
 
             override fun onSurfaceDestroyed(c: SurfaceContainer) {
+                CarLog.add(carContext, "Car took the video surface away")
                 surface = null
                 CarBridge.surface = null
                 if (CarBridge.casting) CarBridge.release() else player.clearVideoSurface()
@@ -141,6 +182,7 @@ class CarVideoScreen(ctx: CarContext) : Screen(ctx) {
             .build()
     } catch (e: Throwable) {
         // Show the problem on the car screen instead of crashing Android Auto.
+        CarLog.add(carContext, "Template error: ${e.javaClass.simpleName}: ${e.message}")
         MessageTemplate.Builder("Hub video could not start: ${e.javaClass.simpleName}: ${e.message}").setTitle("Hub").setHeaderAction(Action.APP_ICON).build()
     }
 }
@@ -217,5 +259,23 @@ class ChannelsScreen(
             items.addItem(Row.Builder().setTitle("Back to start").setOnClickListener { page = 0; invalidate() }.build())
         }
         return ListTemplate.Builder().setTitle(name).setHeaderAction(Action.BACK).setSingleList(items.build()).build()
+    }
+}
+
+@androidx.compose.runtime.Composable
+fun CarLogView() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(Unit) { CarLog.attach(context) }
+    androidx.compose.foundation.layout.Column(modifier = androidx.compose.ui.Modifier.fillMaxSize().padding(16.dp)) {
+        androidx.compose.material3.Text("Android Auto log", fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = HubGreen)
+        androidx.compose.material3.Text(
+            "Connect to the car, open Hub Video there, then come back here. An empty list means Android Auto never opened it.",
+            fontSize = 13.sp, color = HubMuted, modifier = androidx.compose.ui.Modifier.padding(vertical = 6.dp),
+        )
+        FocusButton("Clear", androidx.compose.ui.Modifier.fillMaxWidth().height(44.dp)) { CarLog.clear() }
+        androidx.compose.foundation.lazy.LazyColumn(modifier = androidx.compose.ui.Modifier.padding(top = 8.dp)) {
+            if (CarLog.lines.isEmpty()) item { androidx.compose.material3.Text("(nothing yet)", color = HubMuted) }
+            androidx.compose.foundation.lazy.items(CarLog.lines.reversed()) { androidx.compose.material3.Text(it, fontSize = 13.sp, modifier = androidx.compose.ui.Modifier.padding(vertical = 2.dp)) }
+        }
     }
 }

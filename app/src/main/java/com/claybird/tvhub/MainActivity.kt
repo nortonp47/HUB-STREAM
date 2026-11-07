@@ -117,6 +117,7 @@ sealed class Screen {
     object Discover : Screen()
     object Addons : Screen()
     object ProfilePicker : Screen()
+    object CarLogScreen : Screen()
     class Browse(val kind: Kind, val favorites: Boolean = false) : Screen()
     class Episodes(val show: Show, val back: Screen) : Screen()
 }
@@ -208,6 +209,7 @@ fun HubApp() {
                 onPlayUrl = { title, url -> PlayerActivity.vod(context, title, url) },
             )
             Screen.Addons -> AddonsScreen(isTv)
+            Screen.CarLogScreen -> CarLogView()
             Screen.ProfilePicker -> ProfilesScreen(isTv, onDone = { screen = start })
             Screen.Guide -> GuideScreen(isTv = isTv, onWatch = watchLive, onCatchUp = catchUp)
             Screen.Search -> SearchScreen(
