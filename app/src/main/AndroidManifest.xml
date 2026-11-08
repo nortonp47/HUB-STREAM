@@ -67,6 +67,7 @@
         <!-- Android Auto video (experimental): shown as a navigation-style app, so it can draw video on the car screen. -->
         <service
             android:name=".HubCarService"
+            android:enabled="false"
             android:exported="true"
             android:label="Hub Video"
             android:icon="@drawable/ic_app">

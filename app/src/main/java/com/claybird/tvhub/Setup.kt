@@ -293,6 +293,18 @@ fun SettingsScreen(isTv: Boolean, onOpen: (Screen) -> Unit) {
             Spacer(Modifier.height(6.dp))
             FocusButton("Profiles (kids, adults)", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.ProfilePicker) }
             Spacer(Modifier.height(6.dp))
+            val carCtx = androidx.compose.ui.platform.LocalContext.current
+            val carCn = android.content.ComponentName(carCtx, HubCarService::class.java)
+            var carOn by remember { mutableStateOf(carCtx.packageManager.getComponentEnabledSetting(carCn) == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED) }
+            FocusButton(if (carOn) "Car video: ON (tap to turn off)" else "Car video: OFF (tap to turn on)", Modifier.width(380.dp).height(50.dp)) {
+                carOn = !carOn
+                carCtx.packageManager.setComponentEnabledSetting(
+                    carCn,
+                    if (carOn) android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED else android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
             FocusButton("Android Auto log", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.CarLogScreen) }
             Spacer(Modifier.height(6.dp))
             FocusButton("My media (local files)", Modifier.width(380.dp).height(50.dp)) { onOpen(Screen.Local) }
